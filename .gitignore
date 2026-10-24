@@ -1,0 +1,17 @@
+# Game files: never commit
+dump/
+*.xex
+*.iso
+*.image.bin
+# Build output, generated code, logs
+project/out/
+project/generated/
+logs/
+*.exe
+*.dll
+# SDKs and sysroots (keep our own cross toolchain files)
+tools/*
+!tools/cross/
+# Windows download markers
+*:Zone.Identifier
+.claude/settings.local.json
