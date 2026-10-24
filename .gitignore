@@ -1,7 +1,7 @@
 # Game files: never commit
 dump/
-*.xex
-*.iso
+*.[xX][eE][xX]
+*.[iI][sS][oO]
 *.image.bin
 # Build output, generated code, logs
 project/out/
@@ -15,3 +15,6 @@ tools/*
 # Windows download markers
 *:Zone.Identifier
 .claude/settings.local.json
+# Local tool builds
+scripts/*/build/
+__pycache__/

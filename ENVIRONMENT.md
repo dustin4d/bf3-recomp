@@ -195,8 +195,8 @@ Create `/home/dustin/workspace/bf3-recomp/CLAUDE.md` (short: layout, build comma
 
 ## 8. First Run Checklist
 
-- [ ] `rexglue --help` works and the real flags are recorded
-- [ ] `dump/default.xex` is present, valid, and its hash recorded
+- [x] `rexglue --help` works and the real flags are recorded
+- [x] `dump/default.xex` is present, valid, and its hash recorded (here: `dump/Disc N/game/`, see docs)
 - [ ] Project initialized; manifest points at the executable
 - [ ] Codegen produces C++ under `project/generated/`
 - [ ] Linux compile check links (after reconfigure)

@@ -9,7 +9,12 @@ Spec ("done"): TBD, to be agreed with the user and recorded here.
 - Never build under /mnt/c. The only Windows-side location builds may be written to: TBD.
 
 ## Layout
-- `dump/` original game files (never committed). Main executable: `dump/default.xex` (md5 TBD).
+- `scripts/rex_extract/` C++ tool on ReXGlue's runtime: extracts disc images and STFS packages, and turns an XEX
+  into its flat PE image. `scripts/xdvdfs.py` is an independent Python disc lister for cross-checks.
+- `dump/` original game files (never committed). Full disc ISOs in `dump/Disc 1/` (MP/Co-Op) and `dump/Disc 2/`
+  (Campaign); full extracted game in `dump/Disc N/game/` (launcher `Default.xex` + DLL modules `BF.Main.xex`,
+  `BF.Splash.xex`, `Engine.BuildInfo.xex`), flat images `dump/Disc N/*.image.bin`, HD Content pack in
+  `dump/Disc 1/hd_content/`. Code is identical on both discs; Disc 1 is canonical. Details in docs/CLAUDE_SKILL.md.
 - `project/` ReXGlue project: manifest, `generated/` (never hand-edited), `src/` (our hooks).
 - `tools/` SDKs and sysroots (not committed, except `tools/cross/`). `scripts/` helpers. `logs/` all logs.
 - `docs/CLAUDE_SKILL.md` verified commands, manifest syntax, fix log, findings.
