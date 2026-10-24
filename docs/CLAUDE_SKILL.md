@@ -39,6 +39,12 @@ and GhidraMCP.
 - GhidraMCP: reachable from WSL (mirrored networking). Next phase: import `dump/Disc 1/game/Default.xex` and
   `BF.Main.xex` (then BF.Splash, Engine.BuildInfo) with XEXLoaderWV, confirm image md5s/bases above with
   `get_program_info`, then find how the launcher loads the DLL modules (XexLoadImage / XexLoadExecutable imports).
+- Unified Ghidra program: `scripts/ghidra/MergeXexModules.java`. A single merged XEX file isn't possible (one PE per
+  XEX, signed headers, and BF.Splash overlaps BF.Main). Instead import all four .xex with XEXLoaderWV (it has no
+  Add To Program support), open BF.Main, run the script and pick Default, Engine.BuildInfo, BF.Splash. Blocks,
+  labels and function entries are copied; Default/Engine.BuildInfo land at their real addresses, BF.Splash in
+  overlay space `BF_Splash` (addresses `BF_Splash::83480000`). Then run auto-analysis. Compiles against Ghidra
+  12.1.4 (javac, Windows JDK 21); not yet run on a real project.
 
 ## Commands
 ```bash
