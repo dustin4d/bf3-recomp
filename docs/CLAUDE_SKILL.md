@@ -39,12 +39,16 @@ and GhidraMCP.
 - GhidraMCP: reachable from WSL (mirrored networking). Next phase: import `dump/Disc 1/game/Default.xex` and
   `BF.Main.xex` (then BF.Splash, Engine.BuildInfo) with XEXLoaderWV, confirm image md5s/bases above with
   `get_program_info`, then find how the launcher loads the DLL modules (XexLoadImage / XexLoadExecutable imports).
-- Unified Ghidra program: `scripts/ghidra/MergeXexModules.java`. A single merged XEX file isn't possible (one PE per
-  XEX, signed headers, and BF.Splash overlaps BF.Main). Instead import all four .xex with XEXLoaderWV (it has no
-  Add To Program support), open BF.Main, run the script and pick Default, Engine.BuildInfo, BF.Splash. Blocks,
-  labels and function entries are copied; Default/Engine.BuildInfo land at their real addresses, BF.Splash in
-  overlay space `BF_Splash` (addresses `BF_Splash::83480000`). Then run auto-analysis. Compiles against Ghidra
-  12.1.4 (javac, Windows JDK 21); not yet run on a real project.
+- Ghidra project: `C:\Users\Dustin\BF3-RECOMP` (user-created). `/modules/` = the four .xex imported with
+  XEXLoaderWV, unanalyzed, untouched. `/merged/BF.Main.xex` = BF.Main + Default + Engine.BuildInfo at their real
+  addresses + BF.Splash in overlay space `BF_Splash` (addresses `BF_Splash::83480000`): 38 blocks, 66770 functions
+  (from .pdata), labels/imports copied. Not yet auto-analyzed. Open `/merged/BF.Main.xex` for GhidraMCP.
+- Verified with `BF3VerifyAgainstImage`: every block of all four modules matches `rex_extract image` byte for byte,
+  except the tail of BF.Main `.reloc` (VA 0x841F0200, vsize 0x13DED0, runs 0xCE0D0 past the image end 0x84260000;
+  the in-image part differs between the two decoders). XEXLoaderWV logs `ERROR out of input bytes
+  (LzxDecompression)` on every module for the same reason. Harmless: titles load at a fixed base, relocs are unused.
+- A single merged XEX isn't possible (one PE per XEX, signed headers, BF.Splash overlaps BF.Main) and XEXLoaderWV
+  has no Add To Program, hence the merge script.
 
 ## Commands
 ```bash
@@ -64,7 +68,17 @@ $X disc  "dump/Disc 1/<name>.iso" "dump/Disc 1/game"          # ~45s per disc
 $X stfs  "dump/Disc 1/game/Content/0000000000000000/45410950/00000002/4541095000000000" "dump/Disc 1/hd_content"
 $X image "dump/Disc 1/game/BF.Main.xex" "dump/Disc 1/BF.Main.image.bin"
 python -I scripts/xdvdfs.py list <iso>      # independent pure-Python XDVDFS reader, for cross-checks
+
+# Headless Ghidra (Windows, project BF3-RECOMP must be closed in the GUI). Log: logs/ghidra-<name>.log
+scripts/ghidra/headless.sh import /modules -import "$(wslpath -w "dump/Disc 1/game/BF.Main.xex")" ... -noanalysis
+scripts/ghidra/headless.sh merge /merged -import "$(wslpath -w "dump/Disc 1/game/BF.Main.xex")" -overwrite \
+  -noanalysis -postScript BF3MergeXexModules.java /modules/Default.xex /modules/Engine.BuildInfo.xex /modules/BF.Splash.xex
+scripts/ghidra/headless.sh verify-merged /merged -process BF.Main.xex -readOnly -noanalysis \
+  -postScript BF3VerifyAgainstImage.java <BF.Main.image.bin> <Default...> <Engine.BuildInfo...> BF_Splash=<BF.Splash...>
 ```
+Headless gotchas: `-postScript` takes a script name only, and `C:\Users\Dustin\ghidra_scripts` wins over
+`-scriptPath`, so repo scripts carry a `BF3` prefix. The wrapper exits 1 on any ERROR line, including the
+harmless LZX one: read the log. Imports take about 1 min; the program image base stays 0 (XEX base is not applied).
 Nothing else verified yet for this project. `docs/reference/trialshd_CLAUDE_SKILL.md` has the forms that worked for
 Trials HD on the same SDK version; re-verify each before recording it here.
 

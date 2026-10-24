@@ -34,7 +34,7 @@ import ghidra.program.model.symbol.SymbolTable;
 import ghidra.program.model.symbol.SymbolType;
 import ghidra.util.exception.CancelledException;
 
-public class MergeXexModules extends GhidraScript {
+public class BF3MergeXexModules extends GhidraScript {
 
 	@Override
 	protected void run() throws Exception {
@@ -104,6 +104,8 @@ public class MergeXexModules extends GhidraScript {
 				collides = true;
 			}
 		}
+		// An overlay space with no blocks yet maps getAddress() to its base space, so the copy below
+		// uses getAddressInThisSpaceOnly() throughout.
 		AddressSpace space =
 			collides ? currentProgram.createOverlaySpace(tag, defaultSpace) : defaultSpace;
 		println(String.format("%s -> %s", src.getName(),
@@ -114,7 +116,7 @@ public class MergeXexModules extends GhidraScript {
 			if (!b.getStart().getAddressSpace().isLoadedMemorySpace()) {
 				continue;
 			}
-			Address start = space.getAddress(b.getStart().getOffset());
+			Address start = space.getAddressInThisSpaceOnly(b.getStart().getOffset());
 			String name = tag + "_" + b.getName();
 			MemoryBlock nb;
 			if (b.isInitialized()) {
@@ -143,7 +145,7 @@ public class MergeXexModules extends GhidraScript {
 				(type != SymbolType.LABEL && type != SymbolType.FUNCTION)) {
 				continue;
 			}
-			Address a = space.getAddress(s.getAddress().getOffset());
+			Address a = space.getAddressInThisSpaceOnly(s.getAddress().getOffset());
 			if (!mem.contains(a)) {
 				continue;
 			}
@@ -153,7 +155,7 @@ public class MergeXexModules extends GhidraScript {
 
 		AddressSet entries = new AddressSet();
 		for (Function f : src.getFunctionManager().getFunctions(true)) {
-			Address a = space.getAddress(f.getEntryPoint().getOffset());
+			Address a = space.getAddressInThisSpaceOnly(f.getEntryPoint().getOffset());
 			if (mem.contains(a)) {
 				entries.add(a);
 			}
