@@ -70,3 +70,5 @@ else()
     target_link_libraries(rexgpu-xenos PRIVATE "${rexglue_DIR}/../../rexglue-sdk-win/lib/xxhash.lib")
 endif()
 set_target_properties(rexgpu-xenos PROPERTIES CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
+# Linker map for crash/thread-dump symbolization (scripts/resolve_rva.py).
+target_link_options(rexgpu-xenos PRIVATE "LINKER:/MAP:${CMAKE_CURRENT_BINARY_DIR}/rexgpu-xenos.map")

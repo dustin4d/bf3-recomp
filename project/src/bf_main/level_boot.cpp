@@ -467,3 +467,38 @@ extern "C" REX_FUNC(sub_834131A0) {
   }
   __imp__sub_834131A0(ctx, base);
 }
+
+// Diagnostic: GPU fence wait (sub_82FCBE68(device r3, fence r4, ...) loops on sub_82FCC8D8 until the completed fence
+// **(device+0x2B10) passes the target; device+0x2B1C is the last fence issued). Logs every 2 s while waiting.
+REX_EXTERN(__imp__sub_82FCC8D8);
+extern "C" REX_FUNC(sub_82FCC8D8) {
+  static std::atomic<uint64_t> last{0};
+  const uint64_t now = NowMs();
+  if (now - last.load() > 2000) {
+    last = now;
+    const uint32_t state = ctx.r3.u32, device = REX_LOAD_U32(state);
+    const uint32_t fence_ptr = REX_LOAD_U32(device + 0x2B10);
+    REXLOG_INFO("gpu fence wait: device {:08X} issued {:08X} completed {:08X} (at {:08X}) state[1..3] {:08X} {:08X} {:08X}",
+                device, REX_LOAD_U32(device + 0x2B1C), fence_ptr ? REX_LOAD_U32(fence_ptr) : 0, fence_ptr,
+                REX_LOAD_U32(state + 4), REX_LOAD_U32(state + 8), REX_LOAD_U32(state + 12));
+  }
+  __imp__sub_82FCC8D8(ctx, base);
+}
+
+// Diagnostic (BF3_MSG_TRACE=1): main loop rate (app update sub_82FE7898, once per frame).
+REX_EXTERN(__imp__sub_82FE7898);
+extern "C" REX_FUNC(sub_82FE7898) {
+  static uint64_t window_start = 0;
+  static int frames = 0;
+  if (MsgTrace()) {
+    const uint64_t now = NowMs();
+    if (!window_start) window_start = now;
+    ++frames;
+    if (now - window_start >= 2000) {
+      REXLOG_INFO("main loop: {:.1f} frames/s", frames * 1000.0 / double(now - window_start));
+      frames = 0;
+      window_start = now;
+    }
+  }
+  __imp__sub_82FE7898(ctx, base);
+}

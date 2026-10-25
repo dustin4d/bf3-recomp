@@ -299,6 +299,12 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
   (level_boot.cpp RequestLevel, Team Deathmatch). Result: PRACTICE -> OPERATION METRO -> client ingame, TDM spawn
   screens pushed, but the screen stays black (only the loading indicator). Server backend fallback (no Blaze) is
   unconditional now; level heap 160 MB by default.
+- In-level black screen (PRACTICE -> Metro): NOT a hang. Main loop runs 30 fps (BF3_MSG_TRACE logs it), GPU fences
+  advance (~420/s, gpu fence wait log), no WAIT_REG_MEM >200 ms. Spawn screens are pushed but the frame is black
+  except the loading spinner; console UI (BF3_UI_PLATFORM=xenon), --gpu_allow_invalid_fetch_constants=true and
+  --readback_resolve=fast don't change it. Likely the in-game renderer's final output (UI is composited through it).
+  Uncommitted diagnostic in tools/rexglue-src command_processor.cpp: slow WAIT_REG_MEM log (not in patches/ yet).
+  gpu_plugin now writes rexgpu-xenos.map for symbolized dumps.
 - Xbox LIVE removed: no sign-in spoofing (live_emulation.cpp deleted). Local online stack (bf_main/local_online.cpp,
   BF3_LOCAL_ONLINE=0 off): flow data 0x9E2114F5 (online state; sub_837F0090 from online manager 0x840D63D0+0x20)
   answered "Online"; 0x938E1FD9 HasStats (mysoldiergraph) true; player name (sub_830271A0 "xenon-retail" machine
