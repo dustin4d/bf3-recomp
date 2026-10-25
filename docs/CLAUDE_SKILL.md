@@ -220,6 +220,11 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
     changed, forces readback_memexport_fast=false): cuts written bytes from 2.1 MB to ~10 KB per 8 readbacks, but the
     plugin's GPU copy of the heap is sometimes OLDER than the last upload (e.g. 0xDDDDDDDD vs 3F001FEF at +0x28), so
     some stale bytes still land: fn==0 still occurs. Needs a GPU-side before/after diff in the plugin itself.
+- STATUS 2026-10-25 23:00: MAIN MENU reached (CAMPAIGN, MULTIPLAYER, CO-OP, MY SOLDIER, OPTIONS, STORE, EXTRAS; Battle
+  Feed "YOU ARE OFFLINE"). Title screen at ~50 s, START -> main menu. Scripted input:
+  `BF3_PAD_SCRIPT="55000:START;60000:START;66000:A" scripts/win_run.sh 95 info` (src/pad_inject.cpp hooks
+  bf3_BF_Main.dll's import of __imp__XamInputGetState once the DLL loads; ms counted from the first input poll).
+  PC keyboard/mouse defaults in src/pc_input.cpp (mnk_mode + mnk_mouse, BF3-PC-style binds).
 - STATUS 2026-10-25: boots to the title screen ("PRESS START TO BEGIN") with the patched GPU plugin; no job-system
   errors. The memcpy-hook workaround (src/gpu_readback_fix.cpp) was removed, superseded by the plugin patch.
 - STATUS 2026-10-24 (end of session 1): boots through launcher -> BF.Main -> Engine.BuildInfo, renders the loading

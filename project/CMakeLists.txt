@@ -15,6 +15,8 @@ set(BF3_SOURCES
     src/main.cpp
     src/launcher_hooks.cpp
     src/crash_trace.cpp
+    src/pad_inject.cpp
+    src/pc_input.cpp
 )
 
 if(WIN32)

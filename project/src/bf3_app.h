@@ -6,6 +6,9 @@
 
 #include <rex/filesystem.h>
 
+#include "pad_inject.h"
+#include "pc_input.h"
+
 namespace bf3 {
 void InstallDiagnostics();  // crash_trace.cpp
 }
@@ -36,7 +39,12 @@ class Bf3App : public rex::ReXApp {
   }
 
   // Override virtual hooks for customization:
-  void OnPostInitLogging() override { bf3::InstallDiagnostics(); }
+  void OnPostInitLogging() override {
+    bf3::InstallDiagnostics();
+    bf3::ApplyPcInputDefaults();
+  }
+
+  void OnPostSetup() override { bf3::InstallPadInject(); }
   // void OnLoadXexImage(std::string& xex_image) override {}
   // void OnPostLoadXexImage() override {}
   // void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {}
