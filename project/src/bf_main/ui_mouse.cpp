@@ -202,8 +202,36 @@ extern "C" REX_FUNC(sub_83A348F0) {
   GfxScope scope;
   __imp__sub_83A348F0(ctx, base);
 }
+namespace {
+std::string GuestText(uint8_t* base, uint32_t a) {
+  if (a < 0x40000000 || a >= 0xA0000000) return {};
+  const char* p = reinterpret_cast<const char*>(REX_RAW_ADDR(a));
+  std::string s(p, strnlen(p, 120));
+  for (char c : s) if (static_cast<unsigned char>(c) < 0x20 && c != '\n') return {};
+  return s;
+}
+}  // namespace
+
+// sub_83A3F0E8(movie root r3, method r4, result r5, args r6, count r7). BF3_INVOKE_TRACE=1 logs them.
 extern "C" REX_FUNC(sub_83A3F0E8) {
   GfxScope scope;
+  static const bool trace = [] {
+    const char* env = std::getenv("BF3_INVOKE_TRACE");
+    return env && *env == '1';
+  }();
+  if (trace) {
+    std::string line = "invoke " + GuestText(base, ctx.r4.u32) + "(";
+    const uint32_t args = ctx.r6.u32, n = ctx.r7.u32;
+    for (uint32_t i = 0; i < n && i < 8 && args; ++i) {
+      const uint32_t a = args + i * 16;
+      std::string words;
+      for (int w = 0; w < 4; ++w) words += fmt::format("{:08X} ", REX_LOAD_U32(a + 4 * w));
+      std::string text;
+      for (int w = 0; w < 4 && text.empty(); ++w) text = GuestText(base, REX_LOAD_U32(a + 4 * w));
+      line += words + (text.empty() ? "" : "'" + text + "'") + "; ";
+    }
+    REXLOG_INFO("{})", line);
+  }
   __imp__sub_83A3F0E8(ctx, base);
 }
 extern "C" REX_FUNC(sub_83A3F358) {
@@ -213,4 +241,18 @@ extern "C" REX_FUNC(sub_83A3F358) {
 extern "C" REX_FUNC(sub_83A3DE08) {
   GfxScope scope;
   __imp__sub_83A3DE08(ctx, base);
+}
+
+// BF3_CMP_TRACE=<string>: log case-insensitive compares (sub_830078D0(string* r3, const char* r4)) against it.
+REX_EXTERN(__imp__sub_830078D0);
+extern "C" REX_FUNC(sub_830078D0) {
+  static const char* want = [] {
+    const char* env = std::getenv("BF3_CMP_TRACE");
+    return env && *env ? env : nullptr;
+  }();
+  if (want) {
+    const std::string a = GuestText(base, REX_LOAD_U32(ctx.r3.u32)), b = GuestText(base, ctx.r4.u32);
+    if (a == want || b == want) REXLOG_INFO("cmp '{}' '{}' from {:08X}", a, b, uint32_t(ctx.lr));
+  }
+  __imp__sub_830078D0(ctx, base);
 }

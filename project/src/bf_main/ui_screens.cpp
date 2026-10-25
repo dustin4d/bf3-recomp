@@ -29,7 +29,8 @@ std::string GuestString(uint8_t* base, uint32_t addr) {
 
 }  // namespace
 
-void bf3_ui_screen_pushed(const std::string& name);  // ui_mouse.cpp (before the push)
+void bf3_ui_screen_pushed(const std::string& name);                     // ui_mouse.cpp (before the push)
+void bf3_main_menu_before_push(uint8_t* base, const std::string& name);  // main_menu.cpp
 
 uint32_t bf3_ui_main_movie() { return g_main_movie.load(std::memory_order_relaxed); }
 
@@ -55,6 +56,7 @@ extern "C" REX_FUNC(sub_8328B990) {
     std::string name = GuestString(base, REX_LOAD_U32(screen + 0x18));
     REXLOG_INFO("ui: push screen '{}' ({:08X})", name, screen);
     bf3_ui_screen_pushed(name);
+    bf3_main_menu_before_push(base, name);
     // The movie the screens live in: manager+48 -> holder, holder+12 -> GFxMovieRoot (ui_mouse.cpp feeds it).
     if (const uint32_t holder = REX_LOAD_U32(ctx.r3.u32 + 48)) g_main_movie = REX_LOAD_U32(holder + 12);
     std::lock_guard<std::mutex> lock(g_mutex);
