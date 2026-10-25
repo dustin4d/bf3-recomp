@@ -8,13 +8,17 @@
 #include <windows.h>
 
 #include <cstring>
+#include <mutex>
 
 namespace bf3 {
 
 // Replaces `module`'s import of `symbol` from `dll` (case-insensitive DLL name) with `replacement` and returns the
-// original function, or nullptr if the import isn't there.
+// original function, or nullptr if the import isn't there. Serialized: several install threads patch the same
+// module, and one restoring a page's protection while another writes to it crashed the writer.
 inline void* PatchImport(HMODULE module, const char* dll, const char* symbol, void* replacement) {
   if (!module) return nullptr;
+  static std::mutex mutex;
+  std::lock_guard lock(mutex);
   auto base = reinterpret_cast<uint8_t*>(module);
   auto dos = reinterpret_cast<IMAGE_DOS_HEADER*>(base);
   auto nt = reinterpret_cast<IMAGE_NT_HEADERS*>(base + dos->e_lfanew);

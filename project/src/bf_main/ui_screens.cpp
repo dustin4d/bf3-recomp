@@ -6,6 +6,7 @@
 // Compiled into the bf3_BF_Main DLL (see CMakeLists.txt): bf3_pch.h is generated/bf_main/bf3_pch.h.
 #include "bf3_pch.h"
 
+#include <atomic>
 #include <cstring>
 #include <map>
 #include <mutex>
@@ -18,6 +19,7 @@ namespace {
 std::mutex g_mutex;
 std::string g_top_screen;
 std::map<std::string, int> g_push_counts;
+std::atomic<uint32_t> g_main_movie{0};
 
 std::string GuestString(uint8_t* base, uint32_t addr) {
   if (!addr) return {};
@@ -26,6 +28,10 @@ std::string GuestString(uint8_t* base, uint32_t addr) {
 }
 
 }  // namespace
+
+void bf3_ui_screen_pushed(const std::string& name);  // ui_mouse.cpp (before the push)
+
+uint32_t bf3_ui_main_movie() { return g_main_movie.load(std::memory_order_relaxed); }
 
 // Read by bf3.exe (src/ui_state.cpp). Copies the last pushed screen's name into out (no terminator), returns length.
 extern "C" __declspec(dllexport) int bf3_ui_top_screen(char* out, int capacity) {
@@ -48,6 +54,9 @@ extern "C" REX_FUNC(sub_8328B990) {
   if (screen) {
     std::string name = GuestString(base, REX_LOAD_U32(screen + 0x18));
     REXLOG_INFO("ui: push screen '{}' ({:08X})", name, screen);
+    bf3_ui_screen_pushed(name);
+    // The movie the screens live in: manager+48 -> holder, holder+12 -> GFxMovieRoot (ui_mouse.cpp feeds it).
+    if (const uint32_t holder = REX_LOAD_U32(ctx.r3.u32 + 48)) g_main_movie = REX_LOAD_U32(holder + 12);
     std::lock_guard<std::mutex> lock(g_mutex);
     g_top_screen = name;
     ++g_push_counts[name];

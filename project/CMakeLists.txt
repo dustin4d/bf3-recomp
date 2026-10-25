@@ -20,6 +20,8 @@ set(BF3_SOURCES
     src/ui_state.cpp
     src/live_emulation.cpp
     src/kernel_fixes.cpp
+    src/pc_icons.cpp
+    src/pc_mouse.cpp
     src/pc_settings.cpp
 )
 
@@ -41,6 +43,8 @@ if(TARGET bf3_BF_Main)
         src/bf_main/lua_dump.cpp
         src/bf_main/ui_screens.cpp
         src/bf_main/level_boot.cpp
+        src/bf_main/ui_buttons.cpp
+        src/bf_main/ui_mouse.cpp
     )
 endif()
 

@@ -8,6 +8,8 @@
 
 #include "kernel_fixes.h"
 #include "live_emulation.h"
+#include "pc_icons.h"
+#include "pc_mouse.h"
 #include "pc_settings.h"
 #include "pad_inject.h"
 #include "pc_input.h"
@@ -52,6 +54,8 @@ class Bf3App : public rex::ReXApp {
     bf3::InstallPadInject();
     bf3::InstallLiveEmulation();
     bf3::InstallKernelFixes();
+    bf3::pc_icons::Install();
+    bf3::pc_mouse::Install();
   }
   // void OnLoadXexImage(std::string& xex_image) override {}
   // void OnPostLoadXexImage() override {}

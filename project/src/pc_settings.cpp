@@ -8,6 +8,7 @@
 #include "pc_settings.h"
 
 #include "pad_inject.h"
+#include "pc_icons.h"
 #include "pc_input.h"
 #include "ui_state.h"
 
@@ -317,6 +318,7 @@ void SettingsDialog::Save() {
       if (!rex::cvar::SetFlagByName(flag, value)) REXLOG_WARN("pc settings: could not set {} = {}", flag, value);
     }
   }
+  pc_icons::RequestRefresh();
   if (WriteOwnedSettings(g_config_path, values)) {
     REXLOG_INFO("pc settings: saved to {}", g_config_path.string());
   } else {
@@ -526,9 +528,20 @@ class OptionsPrompt final : public rex::ui::ImGuiDialog {
 
  private:
   bool test_opened_ = false;
+  int key_binding_pushes_ = 0;
 
  protected:
   void OnDraw(ImGuiIO& io) override {
+    // The game's PC KEY BINDINGS tab (shown with PC menus, see bf_main/ui_mouse.cpp) edits a PC key map this build
+    // doesn't use, and its keyboard/mouse columns are empty: each time it is opened, open these bindings instead.
+    const int pushes = ui_state::ScreenCount("OptionsKeyBindingScreen");
+    if (pushes != key_binding_pushes_) {
+      key_binding_pushes_ = pushes;
+      if (!g_open && ui_state::TopScreen() == "OptionsKeyBindingScreen") {
+        RequestOpen();
+        return;
+      }
+    }
     if (g_open) return;
     std::string screen = ui_state::TopScreen();
     if (screen.rfind("Options", 0) != 0) return;
@@ -550,6 +563,8 @@ class OptionsPrompt final : public rex::ui::ImGuiDialog {
     dl->AddRectFilled(min, ImVec2(min.x + 4 * scale, max.y), kOrange);
     dl->AddText(ImVec2(min.x + pad.x, min.y + pad.y), IM_COL32(242, 245, 250, 255), text);
     ImGui::PopFont();
+    // Clickable, like the game's PC buttons.
+    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && ImGui::IsMouseHoveringRect(min, max, false)) RequestOpen();
   }
 };
 

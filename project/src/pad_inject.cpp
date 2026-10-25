@@ -45,6 +45,9 @@ struct Step {
 GuestFunc g_original = nullptr;
 std::shared_mutex g_input_lock;
 std::atomic<bool> g_blocked{false};
+std::atomic<bool> g_mask_triggers{false};
+std::atomic<uint16_t> g_pulse_buttons{0};
+std::atomic<uint64_t> g_pulse_until{0};
 std::vector<Step> g_steps;
 std::atomic<uint32_t> g_packet{0x40000000};
 // Script position (only touched from the guest input poll; guarded for polls from several threads).
@@ -114,6 +117,18 @@ void HookedXamInputGetState(PPCContext& ctx, uint8_t* base) {
   if (g_blocked.load(std::memory_order_relaxed) && ctx.r3.u32 == 0) {
     std::memset(base + state + 4, 0, 12);  // keep packet number, idle buttons/triggers/sticks
   }
+  if (g_mask_triggers.load(std::memory_order_relaxed) && ctx.r3.u32 == 0) {
+    std::memset(base + state + 6, 0, 2);  // X_INPUT_GAMEPAD: +0 buttons, +2 left trigger, +3 right trigger
+  }
+  if (const uint16_t pulse = g_pulse_buttons.load(std::memory_order_relaxed); pulse && ctx.r3.u32 == 0) {
+    if (GetTickCount64() < g_pulse_until.load(std::memory_order_relaxed)) {
+      uint8_t* b = base + state + 4;  // X_INPUT_GAMEPAD buttons, big-endian
+      const uint16_t now = uint16_t(b[0] << 8 | b[1]) | pulse;
+      b[0] = uint8_t(now >> 8), b[1] = uint8_t(now);
+    } else {
+      g_pulse_buttons = 0;
+    }
+  }
   if (user != 0 || g_steps.empty()) return;
   uint64_t now = GetTickCount64();
   uint16_t buttons = 0;
@@ -165,6 +180,13 @@ std::shared_mutex& InputLock() { return g_input_lock; }
 
 void SetGameInputBlocked(bool blocked) { g_blocked = blocked; }
 
+void SetMenuTriggerMask(bool masked) { g_mask_triggers = masked; }
+
+void PulseButtons(uint16_t buttons, uint32_t ms) {
+  g_pulse_until = GetTickCount64() + ms;
+  g_pulse_buttons = buttons;
+}
+
 void InstallPadInject() {
   const char* script = std::getenv("BF3_PAD_SCRIPT");
   if (script && *script) ParseScript(script);
@@ -201,5 +223,7 @@ std::shared_mutex g_input_lock;
 void InstallPadInject() {}
 std::shared_mutex& InputLock() { return g_input_lock; }
 void SetGameInputBlocked(bool) {}
+void SetMenuTriggerMask(bool) {}
+void PulseButtons(uint16_t, uint32_t) {}
 }  // namespace bf3
 #endif

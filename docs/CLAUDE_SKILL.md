@@ -273,6 +273,24 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
   - BF3_MAIN_HEAP_MB sizes the level heap (default 48, 160 for level boots).
 - Crash trace also walks the host stack on the runtime's "Unhandled guest access violation" message.
 - scripts/containing_func.py <addr>...: the recompiled function containing a guest address.
+- PC-native button icons (src/pc_icons.cpp): the glyph atlas is ui/assets/buttons (CFX movie in Data/Xenon/UI.sb),
+  image buttons_i1 = texture 2048x64 format 9 (ARGB8888, BE texels, X360 2D-tiled) in chunk ecb69283...; Xbox + PS3
+  glyphs side by side. Found in guest physical memory by fingerprint (u64 at +0x78 of the first tile, FNV-1a of 4 KB),
+  pristine copy kept, Xbox glyph boxes redrawn (GDI, 4x supersampled) as keycaps for the bound keys, written back via
+  the 0xA0000000 view. Re-drawn when bindings change. Start reused the mirrored Back glyph: bf_main/ui_buttons.cpp
+  patches the inflated movie (zlib inflate sub_8318B500, the only one) so shape 64 uses sub-image 25 (PS3 R1) unmirrored.
+  scripts/fb_bundles.py (superbundle list/extract), scripts/x360_untile.py, scripts/gfx_dump.py, scripts/avm1_dis.py.
+- Menu mouse (src/pc_mouse.cpp + bf_main/ui_mouse.cpp): window subclass -> bf3_ui_mouse_event queue -> delivered in
+  GFxMovieRoot::Advance (sub_83A434A0, vtable +0x94) via HandleEvent (sub_83A348F0, +0xB4; event {type 1 move/2 down/
+  3 up/4 wheel, f32 x, f32 y, f32 scroll, u32 button, u32 index}, viewport px). Movie: manager(sub_8328B990 r3)+48 ->
+  holder, holder+12; +0x40/44 buffer 1280x720, +0x9B4 mouse count (0 on Xenon -> set 1), +0x2468 focus 0x40000.
+  Menu mode: mouse look off, triggers masked, right-click / mouse back = B pulse. BF3_MOUSE_SCRIPT tests it.
+- UI platform: AS HelperFunctions.getPlatform -> UIDataInterfaceComp.getData(0xD822972E) -> engine handler
+  sub_837F3CC0 answers "xenon" (0x82D83914) via sub_8328D658; "win32" (0x82D8391C) gives PC screens (MainMenuScreenPC
+  offline menu, OptionsControls/Gameplay/Audio/Video/KeyBindingScreen, PC popups, clickable buttons/tabs). The flow
+  asks at two sites (via sub_83294100): 0x836E3D60 per pushed screen, 0x832884E0 for the main menu. Hybrid (default):
+  main menu stays console (Multiplayer/Co-op/My Soldier/Extras), pushed screens get PC variants once it is up.
+  The PC KEY BINDINGS tab (empty KB/mouse columns on Xenon) opens PC SETTINGS instead.
 - Contact sheets: `scripts/contact_sheet.sh <first> <count> <out.png> [cols]` (ffmpeg tile of logs/shots).
 - Lua: only config/startup (Scripts/Game/Startup.lua, getTableAsString); BF3_LUA_DUMP=<dir> dumps chunks
   (src/bf_main/lua_dump.cpp hooks luaL_loadbuffer sub_838F7B38). Menus are Scaleform (instance1.pushScreen).
