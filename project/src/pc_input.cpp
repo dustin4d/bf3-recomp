@@ -2,8 +2,9 @@
 //
 // The game sees an Xbox 360 controller; each emulated button gets the PC key(s) that do the same thing in BF3 PC:
 //   menus     arrows = D-pad, Enter = A (confirm), Esc/Backspace = B (back), P = Start
+//   (at most 3 keys per button: the PC SETTINGS screen edits 3 slots)
 //   on foot   WASD = left stick, mouse = right stick (look), LMB = RT (fire), RMB = LT (aim), Space = A (jump),
-//             C/Ctrl = B (crouch, hold = prone), R/E = X (reload/interact), 1/2 = Y (switch weapon),
+//             C = B (crouch, hold = prone), R/E = X (reload/interact), 1/2 = Y (switch weapon),
 //             G = RB (grenade), Q = LB (spot), Shift = left stick press (sprint), F/V = right stick press (melee),
 //             3/4 = D-pad left/right (gadgets), Tab = Back (scoreboard)
 
@@ -21,8 +22,8 @@ namespace {
 constexpr std::pair<std::string_view, std::string_view> kPcInputDefaults[] = {
     {"mnk_mode", "true"},
     {"mnk_mouse", "true"},
-    {"keybind_a", "Return,Space"},
-    {"keybind_b", "Escape,Backspace,C,Control"},
+    {"keybind_a", "Space,Return"},
+    {"keybind_b", "C,Escape,Backspace"},
     {"keybind_x", "R,E"},
     {"keybind_y", "1,2"},
     {"keybind_left_trigger", "RMB"},
@@ -44,6 +45,20 @@ constexpr std::pair<std::string_view, std::string_view> kPcInputDefaults[] = {
 };
 
 }  // namespace
+
+std::string PcInputDefault(std::string_view flag) {
+  for (auto [name, value] : kPcInputDefaults) {
+    if (name == flag) return std::string(value);
+  }
+  return {};
+}
+
+bool IsPcInputFlag(std::string_view flag) {
+  for (auto [name, value] : kPcInputDefaults) {
+    if (name == flag) return true;
+  }
+  return false;
+}
 
 void ApplyPcInputDefaults() {
   for (auto [name, value] : kPcInputDefaults) {

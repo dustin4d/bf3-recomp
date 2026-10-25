@@ -1,5 +1,6 @@
-// Scripted controller input for automated tests, independent of window focus.
+// Guest controller input hook: input lock, input blocking for host screens, and scripted test input.
 //
+// Scripted controller input for automated tests, independent of window focus:
 // BF3_PAD_SCRIPT="<step>;<step>;..." drives controller 0. Steps run in order:
 //   <ms>:<buttons>[:<hold ms>]   wait <ms> after the previous step, then press (hold default 150 ms)
 //   wait:<ScreenName>[#<n>]      wait until that UI screen is on top (ui_state, e.g. MainMenuScreen); with #n, until
@@ -42,6 +43,8 @@ struct Step {
 };
 
 GuestFunc g_original = nullptr;
+std::shared_mutex g_input_lock;
+std::atomic<bool> g_blocked{false};
 std::vector<Step> g_steps;
 std::atomic<uint32_t> g_packet{0x40000000};
 // Script position (only touched from the guest input poll; guarded for polls from several threads).
@@ -103,8 +106,15 @@ void ParseScript(const std::string& script) {
 void HookedXamInputGetState(PPCContext& ctx, uint8_t* base) {
   const uint32_t user = ctx.r3.u32;
   const uint32_t state = ctx.r5.u32;
-  g_original(ctx, base);
-  if (user != 0 || !state) return;
+  {
+    std::shared_lock lock(g_input_lock);
+    g_original(ctx, base);
+  }
+  if (!state) return;
+  if (g_blocked.load(std::memory_order_relaxed) && ctx.r3.u32 == 0) {
+    std::memset(base + state + 4, 0, 12);  // keep packet number, idle buttons/triggers/sticks
+  }
+  if (user != 0 || g_steps.empty()) return;
   uint64_t now = GetTickCount64();
   uint16_t buttons = 0;
   uint8_t lt = 0, rt = 0;
@@ -151,10 +161,13 @@ void HookedXamInputGetState(PPCContext& ctx, uint8_t* base) {
 
 }  // namespace
 
+std::shared_mutex& InputLock() { return g_input_lock; }
+
+void SetGameInputBlocked(bool blocked) { g_blocked = blocked; }
+
 void InstallPadInject() {
   const char* script = std::getenv("BF3_PAD_SCRIPT");
-  if (!script || !*script) return;
-  ParseScript(script);
+  if (script && *script) ParseScript(script);
   // bf3_BF_Main.dll is loaded when the launcher loads BF.Main, after setup: wait for it, then patch its import.
   CreateThread(
       nullptr, 0,
@@ -172,7 +185,7 @@ void InstallPadInject() {
           return 0;
         }
         g_original = reinterpret_cast<GuestFunc>(original);
-        REXLOG_INFO("pad inject: hooked XamInputGetState, {} scripted steps", g_steps.size());
+        REXLOG_INFO("input hook: XamInputGetState hooked, {} scripted steps", g_steps.size());
         return 0;
       },
       nullptr, 0, nullptr);
@@ -182,6 +195,11 @@ void InstallPadInject() {
 
 #else
 namespace bf3 {
+namespace {
+std::shared_mutex g_input_lock;
+}
 void InstallPadInject() {}
+std::shared_mutex& InputLock() { return g_input_lock; }
+void SetGameInputBlocked(bool) {}
 }  // namespace bf3
 #endif

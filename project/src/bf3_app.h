@@ -6,6 +6,8 @@
 
 #include <rex/filesystem.h>
 
+#include "live_emulation.h"
+#include "pc_settings.h"
 #include "pad_inject.h"
 #include "pc_input.h"
 
@@ -33,6 +35,7 @@ class Bf3App : public rex::ReXApp {
 
   // Without --game_data_root, use game\ next to the exe (C:\Games\BF3-recomp\game), so a double-click works.
   void OnConfigurePaths(rex::PathConfig& paths) override {
+    config_path_ = paths.config_path;
     if (!paths.game_data_root.empty()) return;
     auto game_dir = rex::filesystem::GetExecutableFolder() / "game";
     if (std::filesystem::is_directory(game_dir)) paths.game_data_root = game_dir;
@@ -44,12 +47,22 @@ class Bf3App : public rex::ReXApp {
     bf3::ApplyPcInputDefaults();
   }
 
-  void OnPostSetup() override { bf3::InstallPadInject(); }
+  void OnPostSetup() override {
+    bf3::InstallPadInject();
+    bf3::InstallLiveEmulation();
+  }
   // void OnLoadXexImage(std::string& xex_image) override {}
   // void OnPostLoadXexImage() override {}
-  // void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {}
+  void OnConfigureFonts(ImFontAtlas* atlas) override { bf3::pc_settings::ConfigureFonts(atlas); }
+
+  void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {
+    bf3::pc_settings::Init(drawer, &app_context(), config_path_);
+  }
   // std::unique_ptr<rex::ui::ImGuiDialog> CreateAchievementsOverlay() override;
   // std::unique_ptr<rex::ui::AchievementNotificationDialog>
   // CreateAchievementNotificationDialog() override;
   // void OnShutdown() override {}
+
+ private:
+  std::filesystem::path config_path_;  // where PC SETTINGS saves (bf3.toml)
 };

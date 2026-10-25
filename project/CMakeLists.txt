@@ -18,6 +18,8 @@ set(BF3_SOURCES
     src/pad_inject.cpp
     src/pc_input.cpp
     src/ui_state.cpp
+    src/live_emulation.cpp
+    src/pc_settings.cpp
 )
 
 if(WIN32)

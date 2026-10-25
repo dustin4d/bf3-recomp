@@ -226,6 +226,16 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
   OptionsNavigationXenonScreen + Options{Controls,Gameplay,Audio,Video}ConsoleScreen, ExtraMenuScreen,
   GoOnlineLoadingScreen (Multiplayer). Multiplayer/Co-op/My Soldier: PopupGeneric "sign in to Xbox LIVE".
   Pad script: `wait:StartScreen#2;3000:START;3000:START;3000:START;wait:MainMenuScreen;4000:DOWN;...`
+- PC SETTINGS (src/pc_settings.cpp): F1, or the prompt shown bottom-right while any Options*Screen is on top.
+  Tabs KEYBOARD & MOUSE (BF3 action names over the emulated pad buttons, 3 key slots, conflict marking), MOUSE
+  (mnk_mouse, mnk_sensitivity), DISPLAY (fullscreen, vsync). Saves only those keys to bf3.toml. Writes take
+  InputLock() exclusively (pad_inject.cpp holds it shared around every guest XamInputGetState); game input is blocked
+  while the screen is open. BF3_TEST_PC_SETTINGS=<tab> opens it automatically on the first Options screen (tests).
+  Known gap: menu and infantry actions share emulated buttons (Esc = Back and Crouch); needs context-aware binds
+  once in-game screens are known. Mouse look also captures the cursor in menus.
+- LIVE emulation (BF3_LIVE=1, src/live_emulation.cpp): sign-in state 2, privileges granted, link up. Multiplayer then
+  goes GoOnlineLoadingScreen -> "Failed to connect to EA Online" (needs EA Blaze backend). Off by default.
+  That popup is also missing glyphs ("ailed to connect to ... nline"): dynamic font glyphs not appearing.
 - Contact sheets: `scripts/contact_sheet.sh <first> <count> <out.png> [cols]` (ffmpeg tile of logs/shots).
 - Lua: only config/startup (Scripts/Game/Startup.lua, getTableAsString); BF3_LUA_DUMP=<dir> dumps chunks
   (src/bf_main/lua_dump.cpp hooks luaL_loadbuffer sub_838F7B38). Menus are Scaleform (instance1.pushScreen).
