@@ -349,6 +349,12 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
   uses it: mouse look only with HudScreen up and no Menu/Spawn/Popup/Options/BackScreen screen (the last pushed
   screen is TabListenerScreen on the deploy screen and DefaultTrackingScreen in gameplay, so it can't tell).
   In-game pause menu: IngameMenuMP.
+- Audio capture (src/audio_capture.cpp): BF3_AUDIO_CAPTURE=<UNC wav path>[:<seconds>] records the frames the game
+  submits (XAudioSubmitRenderDriverFrame import of bf3_BF_Main.dll: 256 samples x 6 channels, planar big-endian
+  float, 48 kHz) into a 6-channel float WAV, and logs frames/s, silent frames and peak per second. Metro capture
+  (2026-10-25): steady ~188 frames/s, no frame-boundary discontinuities, repeats or dropouts; FL/FR/BL/BR carry the
+  mix, FC and LFE are always 0. Output stage (rexruntime SDL driver): 6 ch to an 8 ch Realtek endpoint.
+  XMA: "write to unknown register 0x601" ~400/s (Xenia logs it too).
 - Guest write watch: BF3_WATCH=<guest addr> BF3_WATCH_AT=<s> BF3_WATCH_ANY=1 logs the host stacks of the first
   writes to an 8-byte word through any view (found the LUT writer). BF3_LUT_TRACE=1 (lut_trace.cpp) logs the LUT jobs
   and their color matrices, BF3_FADE_TRACE=1 every fade request, BF3_CFG="Setting value;..." adds Game.cfg lines

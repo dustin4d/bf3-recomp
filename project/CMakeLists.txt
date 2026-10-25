@@ -24,6 +24,7 @@ set(BF3_SOURCES
     src/local_profile.cpp
     src/pc_settings.cpp
     src/pc_practice.cpp
+    src/audio_capture.cpp
 )
 
 if(WIN32)
