@@ -233,9 +233,6 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
   while the screen is open. BF3_TEST_PC_SETTINGS=<tab> opens it automatically on the first Options screen (tests).
   Known gap: menu and infantry actions share emulated buttons (Esc = Back and Crouch); needs context-aware binds
   once in-game screens are known. Mouse look also captures the cursor in menus.
-- LIVE emulation (BF3_LIVE=1, src/live_emulation.cpp): sign-in state 2, privileges granted, link up. Multiplayer then
-  goes GoOnlineLoadingScreen -> "Failed to connect to EA Online" (needs EA Blaze backend). Off by default.
-  That popup is also missing glyphs ("ailed to connect to ... nline"): dynamic font glyphs not appearing.
 - Level boot (BF3_LEVEL=<level>[:<layer inclusion>], e.g. MP_Subway or MP_Subway:GameMode=ConquestSmall0):
   - Default: boot the front end, then switch (level_boot.cpp, hook of the level manager update sub_833AF040): 3 s after
     CoreEnteredIngameMessage it feeds sub_833B1500 a ServerLoadLevelMessageBase built in guest memory (allocator
@@ -291,6 +288,18 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
   asks at two sites (via sub_83294100): 0x836E3D60 per pushed screen, 0x832884E0 for the main menu. Hybrid (default):
   main menu stays console (Multiplayer/Co-op/My Soldier/Extras), pushed screens get PC variants once it is up.
   The PC KEY BINDINGS tab (empty KB/mouse columns on Xenon) opens PC SETTINGS instead.
+- Main menu edits (bf_main/main_menu.cpp): mainmenuscreen StaticItems (0x28 B per item once loaded, count at -4):
+  STORE removed, ID_M_EXTRA strings renamed EXIT (unknown IDs show as-is); ExtraMenuScreen push = quit flag.
+  Flow graphs: scripts/ebx_dump.py <ebx> (Xenon EBX: u32 header, instances each preceded by a GUID, arrays after
+  the instance payload) and scripts/ui_graph.py <dump> <port> (follow UINodeConnections from a port).
+- Xbox LIVE removed: no sign-in spoofing (live_emulation.cpp deleted). Local online stack (bf_main/local_online.cpp,
+  BF3_LOCAL_ONLINE=0 off): flow data 0x9E2114F5 (online state; sub_837F0090 from online manager 0x840D63D0+0x20)
+  answered "Online"; 0x938E1FD9 HasStats (mysoldiergraph) true; player name (sub_830271A0 "xenon-retail" machine
+  name, used by the name getter sub_83704EB0) = soldier name. Local profile (src/local_profile.cpp):
+  user_data_root/soldier_profile.txt, SOLDIER PROFILE prompt on first online section, XamUserGetName/SigninInfo
+  answer the name. MY SOLDIER: stats, progression, customize, dog tags, co-op stats all open (fresh rank 0).
+  MULTIPLAYER / CO-OP then stop at "Please Insert Multiplayer/Co-op Disc" (disc detection; Campaign asks for Disc 2).
+  BF3_DATA_TRACE=1 logs flow data reads (key, type, value).
 - Contact sheets: `scripts/contact_sheet.sh <first> <count> <out.png> [cols]` (ffmpeg tile of logs/shots).
 - Lua: only config/startup (Scripts/Game/Startup.lua, getTableAsString); BF3_LUA_DUMP=<dir> dumps chunks
   (src/bf_main/lua_dump.cpp hooks luaL_loadbuffer sub_838F7B38). Menus are Scaleform (instance1.pushScreen).

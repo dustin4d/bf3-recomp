@@ -7,7 +7,7 @@
 #include <rex/filesystem.h>
 
 #include "kernel_fixes.h"
-#include "live_emulation.h"
+#include "local_profile.h"
 #include "pc_icons.h"
 #include "pc_mouse.h"
 #include "pc_settings.h"
@@ -39,6 +39,8 @@ class Bf3App : public rex::ReXApp {
   // Without --game_data_root, use game\ next to the exe (C:\Games\BF3-recomp\game), so a double-click works.
   void OnConfigurePaths(rex::PathConfig& paths) override {
     config_path_ = paths.config_path;
+    user_data_root_ = paths.user_data_root.empty() ? rex::filesystem::GetExecutableFolder() / "user"
+                                                   : paths.user_data_root;
     if (!paths.game_data_root.empty()) return;
     auto game_dir = rex::filesystem::GetExecutableFolder() / "game";
     if (std::filesystem::is_directory(game_dir)) paths.game_data_root = game_dir;
@@ -52,10 +54,10 @@ class Bf3App : public rex::ReXApp {
 
   void OnPostSetup() override {
     bf3::InstallPadInject();
-    bf3::InstallLiveEmulation();
     bf3::InstallKernelFixes();
     bf3::pc_icons::Install();
     bf3::pc_mouse::Install();
+    bf3::local_profile::Install(user_data_root_);
   }
   // void OnLoadXexImage(std::string& xex_image) override {}
   // void OnPostLoadXexImage() override {}
@@ -63,6 +65,7 @@ class Bf3App : public rex::ReXApp {
 
   void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {
     bf3::pc_settings::Init(drawer, &app_context(), config_path_);
+    bf3::local_profile::CreateDialogs(drawer);
   }
   // std::unique_ptr<rex::ui::ImGuiDialog> CreateAchievementsOverlay() override;
   // std::unique_ptr<rex::ui::AchievementNotificationDialog>
@@ -70,5 +73,6 @@ class Bf3App : public rex::ReXApp {
   // void OnShutdown() override {}
 
  private:
-  std::filesystem::path config_path_;  // where PC SETTINGS saves (bf3.toml)
+  std::filesystem::path config_path_;     // where PC SETTINGS saves (bf3.toml)
+  std::filesystem::path user_data_root_;  // soldier profile
 };

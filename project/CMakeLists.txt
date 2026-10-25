@@ -18,10 +18,10 @@ set(BF3_SOURCES
     src/pad_inject.cpp
     src/pc_input.cpp
     src/ui_state.cpp
-    src/live_emulation.cpp
     src/kernel_fixes.cpp
     src/pc_icons.cpp
     src/pc_mouse.cpp
+    src/local_profile.cpp
     src/pc_settings.cpp
 )
 
@@ -46,6 +46,7 @@ if(TARGET bf3_BF_Main)
         src/bf_main/ui_buttons.cpp
         src/bf_main/ui_mouse.cpp
         src/bf_main/main_menu.cpp
+        src/bf_main/local_online.cpp
     )
 endif()
 

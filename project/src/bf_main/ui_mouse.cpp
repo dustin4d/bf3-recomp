@@ -157,15 +157,41 @@ void bf3_ui_screen_pushed(const std::string& name) {
   }
 }
 
+namespace {
+std::string GuestText(uint8_t* base, uint32_t a) {
+  if (a < 0x40000000 || a >= 0xA0000000) return {};
+  const char* p = reinterpret_cast<const char*>(REX_RAW_ADDR(a));
+  std::string s(p, strnlen(p, 120));
+  for (char c : s) if (static_cast<unsigned char>(c) < 0x20 && c != '\n') return {};
+  return s;
+}
+}  // namespace
+
 thread_local uint32_t t_provider_caller = 0;
 thread_local uint32_t t_read_caller = 0;
+
+void bf3_local_online_data_read(PPCContext& ctx, uint8_t* base, uint32_t key, uint32_t out);
 
 // Flow data read (sub_83294100(node r3, key r4, value* r5, refresh r6)): who asked.
 extern "C" REX_FUNC(sub_83294100) {
   const uint32_t saved = t_read_caller;
   t_read_caller = static_cast<uint32_t>(ctx.lr);
+  const uint32_t key = ctx.r4.u32, out = ctx.r5.u32;
   __imp__sub_83294100(ctx, base);
   t_read_caller = saved;
+  bf3_local_online_data_read(ctx, base, key, out);  // local_online.cpp
+  static const bool trace = [] {
+    const char* env = std::getenv("BF3_DATA_TRACE");
+    return env && *env == '1';
+  }();
+  if (trace && out) {
+    const uint32_t value = REX_LOAD_U32(out);
+    if (value) {
+      const uint32_t type = REX_LOAD_U32(value + 16), payload = REX_LOAD_U32(value + 8);
+      REXLOG_INFO("data read {:08X} from {:08X}: type {} value {:08X} '{}'", key, t_read_caller ? t_read_caller : 0,
+                  type, payload, type == 6 ? GuestText(base, payload) : std::string());
+    }
+  }
 }
 
 // The data provider (calls the handler at 0x832077F8): who asked.
@@ -202,15 +228,7 @@ extern "C" REX_FUNC(sub_83A348F0) {
   GfxScope scope;
   __imp__sub_83A348F0(ctx, base);
 }
-namespace {
-std::string GuestText(uint8_t* base, uint32_t a) {
-  if (a < 0x40000000 || a >= 0xA0000000) return {};
-  const char* p = reinterpret_cast<const char*>(REX_RAW_ADDR(a));
-  std::string s(p, strnlen(p, 120));
-  for (char c : s) if (static_cast<unsigned char>(c) < 0x20 && c != '\n') return {};
-  return s;
-}
-}  // namespace
+
 
 // sub_83A3F0E8(movie root r3, method r4, result r5, args r6, count r7). BF3_INVOKE_TRACE=1 logs them.
 extern "C" REX_FUNC(sub_83A3F0E8) {

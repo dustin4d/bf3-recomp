@@ -591,6 +591,9 @@ void RequestOpen() {
 
 bool IsOpen() { return g_open; }
 
+ImFont* TitleFont() { return g_title_font; }
+ImFont* BodyFont() { return g_body_font; }
+
 void ConfigureFonts(ImFontAtlas* atlas) {
 #if defined(_WIN32)
   char windir[MAX_PATH] = "C:\\Windows";

@@ -5,6 +5,7 @@
 
 #include <filesystem>
 
+struct ImFont;
 struct ImFontAtlas;
 
 namespace rex::ui {
@@ -23,5 +24,9 @@ bool IsOpen();
 
 // Adds the screen's fonts (Bahnschrift from %WINDIR%\Fonts); call from ReXApp::OnConfigureFonts.
 void ConfigureFonts(ImFontAtlas* atlas);
+
+// The fonts, for other host screens in the same style (nullptr if Bahnschrift is missing).
+ImFont* TitleFont();
+ImFont* BodyFont();
 
 }  // namespace bf3::pc_settings
