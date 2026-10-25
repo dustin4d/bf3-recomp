@@ -13,6 +13,7 @@ include(generated/rexglue.cmake)
 # Sources
 set(BF3_SOURCES
     src/main.cpp
+    src/launcher_hooks.cpp
 )
 
 if(WIN32)
@@ -21,4 +22,22 @@ else()
     add_executable(bf3 ${BF3_SOURCES})
 endif()
 
-rexglue_setup_target(bf3)
+rexglue_setup_target(bf3 GPU_PLUGINS xenos)
+
+# Hooks for guest functions that live in a DLL module must be linked into that module's library: a strong
+# definition in bf3.exe can't override a weak function inside bf3_BF_Main.dll.
+if(TARGET bf3_BF_Main)
+    target_sources(bf3_BF_Main PRIVATE
+        src/bf_main/exit_trace.cpp
+        src/bf_main/job_worker.cpp
+    )
+endif()
+
+# Linker maps for scripts/resolve_rva.py (crash_trace frames are <module>+0x<RVA>).
+if(WIN32)
+    foreach(_t bf3 bf3_BF_Main bf3_Engine_BuildInfo)
+        if(TARGET ${_t})
+            target_link_options(${_t} PRIVATE "LINKER:/MAP:$<TARGET_FILE_DIR:${_t}>/${_t}.map")
+        endif()
+    endforeach()
+endif()

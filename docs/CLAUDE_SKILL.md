@@ -29,9 +29,13 @@ and GhidraMCP.
 
   Media IDs: Disc 1 0x61C746D7, Disc 2 0x511536A8. Ghidra: load from `dump/Disc 1/game/` (canonical; Disc 2 decodes to the same images).
 - Project: `project/` (manifest: `project/bf3_manifest.toml`)
-- SDK: `tools/rexglue-sdk` (v0.10.0 stable, linux-amd64, runs codegen) and `tools/rexglue-sdk-win` (v0.10.0,
-  win-amd64, headers/libs for the cross build). Installed 2026-10-24 from the GitHub release, sha256 checked:
-  linux `0388edb3...59328a6`, win `ad4485da...e0c11b`. Nightlies (0.10.0.x-dev) exist; not used.
+- SDK: `tools/rexglue-sdk` + `tools/rexglue-sdk-win` = **nightly-20261002-bd833a2a (0.10.0.24-dev.gbd833a2)**,
+  sha256 checked (linux `0a565652...a3befe`, win `1e19d7ec...7627e7`). Switched from v0.10.0 (kept as
+  `tools/rexglue-sdk-0.10.0`, `tools/rexglue-sdk-win-0.10.0`) because v0.10.0 codegen emits NOTHING for
+  `lwsync`/`sync`/`eieio` (BF.Main: 279/19/16 sites), and Frostbite's lock-free job system broke without the fences
+  (null job callback in sub_8346D590 or a hang, varying run to run). The nightly's generated rexglue.cmake,
+  CMakePresets.json and main.cpp are identical to v0.10.0's. After an SDK swap: `cmake --preset ... --fresh` and
+  `rexglue codegen bf3_manifest.toml --ignore-stamp`.
 - xwin 0.10.0 (`tools/xwin-bin/`, sha256 checked) splatted to `tools/xwin/` (CRT 14.44.35220, Windows SDK
   10.0.26100, same files as the Trials HD setup). Cache in `tools/xwin-cache/`, log `logs/xwin-splat.log`.
 - `tools/cross/` (committed): `win-amd64-xwin.cmake` toolchain + `rexglue/` wrapper package (Windows SDK config,
@@ -113,6 +117,12 @@ cmake --build --preset win-cross-release > ../logs/build-win.log 2>&1
 Codegen log: ~600k "Analyze: function 0x... not in any code region" lines are noise (pointer-like data);
 filter them out (`grep -v 'not in any code region'`). Real failures end with `Validation failed: N unresolved calls`,
 listed as `<target> from <src>: b <target> ... - target not in any function`.
+- **Build gotcha**: when codegen runs inside `cmake --build`, ninja may link stale objects of the files codegen
+  just rewrote (seen as `undefined symbol: sub_X` for removed entries). Run the codegen target (or `rexglue codegen`)
+  first, then build; or build twice.
+- **Hooks for module code go into that module's DLL**: a strong `sub_X` in bf3.exe can't override a weak function in
+  bf3_BF_Main.dll. BF.Main hooks live in `project/src/bf_main/` and are added with `target_sources(bf3_BF_Main ...)`
+  in CMakeLists.txt (they include the module's own `bf3_pch.h`). Launcher hooks stay in `project/src/`.
 - Each DLL module becomes its own shared library (`bf3_BF_Main`, `bf3_Engine_BuildInfo`); codegen writes
   `generated/default/module_registry.cpp` + `dll_targets.cmake` listing only the modules of that run.
 - BF.Main generates ~300 MB of C++ (291 .cpp in total). Functions 0x834EA5D0 (1.2 MB) and 0x834F8010 (1.3 MB)
@@ -132,6 +142,13 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
 | BF.Main 0x83307A48, 0x830D25F8, 0x8366CE60, 0x832EB7E0 | `[modules.functions]` sizeless `{}` | Leaf functions in gaps between .pdata entries, reached only by tail-call `b` from 0x831103CC, 0x830DEBB4, 0x8366F714, 0x832EE868 |
 | Engine.BuildInfo .xidata 0x89010010..0x89010FE0 (254) | `{ size = 0x10 }` each, from `scripts/xidata_thunks.py` | Executable linker thunks `lis/addi r11; mtctr; bctr` with no .pdata; 8 were `b` targets (e.g. 0x89010940 from 0x8901E420). Import stubs later in .xidata left to the import table |
 | Engine.BuildInfo 0x89017EEC | sizeless `{}` | Leaf in a .text gap (andi. r0,r5,3; mtctr; beqlr), tail call from 0x89017F3C |
+| launcher sub_820112A0 | hook `src/launcher_hooks.cpp` (cvar `skip_splash`, default on) sets state+8 = 1 before the original runs | sub_820112A0 loads `GAME:\BF.%s%s.xex` ("Splash" while byte state+8 == 0, else "Main"), calls export ordinal 1 with the state, unloads, sets state+8. Splash isn't recompiled: run 2 died with `Execute(83CBFF00): function not in function table` / ordinal 1 out of bounds. A failed load relaunches default.xex (sub_82017D78) |
+| BF.Main 0x83E99420 + 231 more | sizeless `{}` from `scripts/find_unregistered.py` | Run 3: FATAL unregistered call to 0x83E99420, a static initializer whose only reference is a pointer at 0x83FF3F24 (.data). Same class swept in all modules |
+| BF.Main setjmp 0x83DF2720 / longjmp 0x83DF29F0 | `setjmp_address` / `longjmp_address` in BF.Main's `[[modules]]` | Run 4: `*** STOP: 0x00000000` = exit(1) from luaD_throw (0x838F9F18): Lua's longjmp just returned without the declaration, so a Lua error fell through to panic. Found via the doexit call chain (exit_trace.cpp) |
+| GPU plugin | `GPU_PLUGINS xenos` + default `gpu_plugin = "xenos"` | Run 5: stalled at VdInitializeRingBuffer, no GPU emulation |
+| Toolchain: v0.10.0 -> nightly-20261002 | SDK swap (see Environment) | Run 6-8: null call in job worker sub_8346D590 (12 s) or hang (4 s), nondeterministic: v0.10.0 emitted no fences for lwsync/sync/eieio. Fences alone did NOT fix the null call |
+| BF.Main sub_8346D590 (job worker) | `src/bf_main/job_worker.cpp`: faithful C++ port that skips fn == 0 | Run 9: no crash, ran 90 s; skipped 64-127 jobs in one burst at ~11 s, loading screen faded out (new tip), then black window + silent log = likely hang. OPEN: skipped jobs may not be "already finished" (published before fn written?), check who sets job hi bit 0 and who waits on parent+48 |
+| 33 sweep hits (BF.Main 18 incl. 0x838B2CFC, 0x83001C00; all 6 Default; all 9 Engine.BuildInfo) | commented out in manifest (`REMOVED`) | Interior labels inside .pdata functions (likely SEH handler/scope targets; same 0x5BC/0x848-byte CRT functions in all modules). 3 showed as codegen `Unresolved b target`, 0x83001C00 (bdz target in sub_83001B30) only as a compile error `undeclared label loc_83001C00`. find_unregistered.py now skips targets inside .pdata functions |
 
 ## Known notes
 - Module layout: Default.xex is a small launcher; the game is in DLL-type XEX modules (imports xam/xboxkrnl).
@@ -149,3 +166,34 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
   all modules have `.pdata` (function table for Ghidra/boundary checks) and `.XBLD`; Engine.BuildInfo has
   `.xidata`/`.xedata` (it exports to the others). Not yet examined.
 - `scripts/xex_image.py` from Trials HD handles basic compression only; it does not work here (LZX). Use `rex_extract image`.
+- Game data must be on NTFS: the runtime lowercases guest paths (`game:\default.xex`), so the case-sensitive
+  `\\wsl.localhost` share fails ("Entrypoint XEX not found", modal dialog, exit code 116). Disc 1 minus
+  `$SystemUpdate` and `Content/` (HD pack) is copied to `C:\Games\BF3-recomp\game` (5.7 GB, 71 files, sizes checked).
+- Launcher flow (Default.xex): sub_820112A0 is the module loader (see fix log); export ordinal 1 is the module
+  entry, called with the launcher state object. `0x820130D8` is `__savegprlr_28`, not a getter (decompiler confusion).
+- Testing: `SHOTS=3000 scripts/win_run.sh <secs> <level>` deploys, runs from C:\Games\BF3-recomp with
+  `--game_data_root=C:\Games\BF3-recomp\game`, logs to `logs/win-run.log`, user data to `logs/win-userdata`.
+- `find_unregistered.py` hits that land inside a function show up after codegen as `Unresolved b target X from Y`;
+  the culprit is the added entry between X and Y. Remove it and regenerate.
+- Headless decompile: `BF3Decompile.java <out.txt> <start>-<end> | <addr>...` (launcher: 82010000-8201C650).
+- Crash tracing (`project/src/crash_trace.h`, installed in OnPostInitLogging): logs the host stack as
+  `<module>+0xRVA` for guest null-page faults and for the runtime's `[FATAL] Call to invalid or unregistered function`
+  (a log sink, null_mutex because it logs through the same loggers). Linker maps (`bf3.map`, `bf3_BF_Main.map`,
+  ...) are written by CMakeLists.txt; `scripts/win_run.sh` resolves frames with `scripts/resolve_rva.py`.
+  Windows reports the module as `bf3_BF_Main.DLL` (resolver matches case-insensitively).
+- `*** STOP: 0x00000000` = the game called exit(): BF.Main CRT doexit is sub_838B5860; `src/bf_main/exit_trace.cpp`
+  logs its args and the guest call chain (back chain 0(r1), saved LR at -8 of the caller's r1). Frostbite embeds Lua:
+  luaD_rawrunprotected 0x838F9300, luaD_throw 0x838F9E38 (panic + exit(1) when no errorJmp), lua_pcall-ish 0x838F6A68,
+  luaL_loadbuffer-ish 0x838F7B38. Script helpers like `return tableToString(_G['%s'])` (0x82D845D0) run at boot.
+- GPU: without `gpu_plugin` the game stalls after VdInitializeRingBuffer ("no GPU emulation loaded"). Fixed by
+  `rexglue_setup_target(bf3 GPU_PLUGINS xenos)` (stages rexgpu-xenos.dll) and Bf3App::OnPreSetup defaulting to xenos.
+  D3D12 on the host's RX 7800 XT. First rendered frames: the loading screen with a gameplay tip (2026-10-24).
+- BF.Main job system: worker loop sub_8346D590 claims jobs with ldarx/stdcx on a 64-bit {next, flags} word and calls
+  the job fn at +8 (then clears it); sub_8346E020 pops the list. Code brackets atomics with mfmsr/mtmsrd r13,1
+  (interrupt disable on the console; no-op here).
+- `XMA: Write to unknown register (0601)` floods debug logs (same as Trials HD). `SpChunks.toc` open fails on Disc 1
+  (it's Disc 2's campaign TOC): expected.
+- STATUS 2026-10-24 (end of session 1): boots through launcher -> BF.Main -> Engine.BuildInfo, renders the loading
+  screen (tips, LOADING) via D3D12, loading screen fades out at ~13 s, then black + no logs (probable hang in/after the
+  job system). Next: find the waiter (dump guest thread states at the hang; see who spins/waits on parent+48 or
+  sub_8346BAE0's completion), and verify the job-skip assumption (who sets job.hi bit 0).

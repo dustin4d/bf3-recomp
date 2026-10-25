@@ -4,6 +4,9 @@
 
 #pragma once
 
+#include <rex/filesystem.h>
+
+#include "crash_trace.h"
 #include <rex/rex_app.h>
 
 class Bf3App : public rex::ReXApp {
@@ -16,9 +19,21 @@ class Bf3App : public rex::ReXApp {
         PPCImageConfig));
   }
 
+  // Default to the xenos GPU plugin (staged next to the exe by GPU_PLUGINS xenos) unless --gpu_plugin is given.
+  // Without one the game stalls after VdInitializeRingBuffer ("no GPU emulation loaded").
+  void OnPreSetup(rex::RuntimeConfig& config) override {
+    if (config.gpu_plugin.empty()) config.gpu_plugin = "xenos";
+  }
+
+  // Without --game_data_root, use game\ next to the exe (C:\Games\BF3-recomp\game), so a double-click works.
+  void OnConfigurePaths(rex::PathConfig& paths) override {
+    if (!paths.game_data_root.empty()) return;
+    auto game_dir = rex::filesystem::GetExecutableFolder() / "game";
+    if (std::filesystem::is_directory(game_dir)) paths.game_data_root = game_dir;
+  }
+
   // Override virtual hooks for customization:
-  // void OnPostInitLogging() override {}
-  // void OnPreSetup(rex::RuntimeConfig& config) override {}
+  void OnPostInitLogging() override { bf3::InstallCrashTrace(); }
   // void OnLoadXexImage(std::string& xex_image) override {}
   // void OnPostLoadXexImage() override {}
   // void OnPostSetup() override {}
@@ -27,5 +42,4 @@ class Bf3App : public rex::ReXApp {
   // std::unique_ptr<rex::ui::AchievementNotificationDialog>
   // CreateAchievementNotificationDialog() override;
   // void OnShutdown() override {}
-  // void OnConfigurePaths(rex::PathConfig& paths) override {}
 };
