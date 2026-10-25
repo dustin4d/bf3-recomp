@@ -1,12 +1,15 @@
 # Battlefield 3 (Xbox 360) static recomp
 
 Goal: a native Windows x64 build of Battlefield 3 (Xbox 360), statically recompiled with ReXGlue.
-Spec ("done"): TBD, to be agreed with the user and recorded here.
+Spec, milestone 1 (user, 2026-10-24): boot to the main menu, then working keyboard/mouse input in the menus.
+Campaign (Disc 2) and gameplay come later. Test runs: Claude may launch, kill and screenshot bf3.exe from
+C:\Games\BF3-recomp.
 
 ## Environment
 - Arch on WSL2. Codegen, analysis and compile checks run in WSL; boots and tests run on the Windows host.
 - Ghidra runs on Windows; reach it through the `ghidra` MCP server (mirrored networking).
-- Never build under /mnt/c. The only Windows-side location builds may be written to: TBD.
+- Never build under /mnt/c. Builds deploy to C:\Games\BF3-recomp (exe + DLLs only); the Ghidra project is
+  C:\Users\Dustin\BF3-RECOMP. Nothing else is written on Windows.
 
 ## Layout
 - `scripts/rex_extract/` C++ tool on ReXGlue's runtime: extracts disc images and STFS packages, and turns an XEX

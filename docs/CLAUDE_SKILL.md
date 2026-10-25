@@ -94,8 +94,30 @@ Headless gotchas: `wslpath -w` on a relative path gives a relative Windows path,
 `-postScript` takes a script name only, and `C:\Users\Dustin\ghidra_scripts` wins over
 `-scriptPath`, so repo scripts carry a `BF3` prefix. The wrapper exits 1 on any ERROR line, including the
 harmless LZX one: read the log. Imports take about 1 min; the program image base stays 0 (XEX base is not applied).
-Nothing else verified yet for this project. `docs/reference/trialshd_CLAUDE_SKILL.md` has the forms that worked for
-Trials HD on the same SDK version; re-verify each before recording it here.
+
+### ReXGlue project (verified 2026-10-24)
+```bash
+# init (done once). It LOWERCASES every path it writes (game_root, file_path): fix the case in the manifest.
+tools/rexglue-sdk/bin/rexglue init --project-name bf3 --xex-path "$PWD/dump/Disc 1/game/Default.xex" \
+  --game-root "$PWD/dump/Disc 1/game" --project-root "$PWD/project"
+# --scan-dll only finds *.dll; BF3's modules are .xex, so [[modules]] are written by hand.
+# guest_path = lowercase path relative to game_root (what --scan-dll writes), e.g. "bf.main.xex".
+# Per-module function fixes go in [modules.functions] right after that module's [[modules]] block.
+cd project
+cmake --preset local-debug | win-cross-release        # CMakeUserPresets.json (ours), -j6
+cmake --build --preset win-cross-release --target bf3_codegen > ../logs/codegen.log 2>&1   # ~4 min
+# Codegen for a subset (entrypoint always included). Target names: BF_Main, Engine_BuildInfo, BF_Splash.
+../tools/rexglue-sdk/bin/rexglue codegen bf3_manifest.toml --target BF_Main --target Engine_BuildInfo
+cmake --build --preset win-cross-release > ../logs/build-win.log 2>&1
+```
+Codegen log: ~600k "Analyze: function 0x... not in any code region" lines are noise (pointer-like data);
+filter them out (`grep -v 'not in any code region'`). Real failures end with `Validation failed: N unresolved calls`,
+listed as `<target> from <src>: b <target> ... - target not in any function`.
+- Each DLL module becomes its own shared library (`bf3_BF_Main`, `bf3_Engine_BuildInfo`); codegen writes
+  `generated/default/module_registry.cpp` + `dll_targets.cmake` listing only the modules of that run.
+- BF.Main generates ~300 MB of C++ (291 .cpp in total). Functions 0x834EA5D0 (1.2 MB) and 0x834F8010 (1.3 MB)
+  exceed max_file_size_bytes: warning only.
+- `docs/reference/trialshd_CLAUDE_SKILL.md` has the forms that worked for Trials HD on the same SDK version.
 
 ## Rules
 - Never distribute or request game assets.
@@ -106,6 +128,10 @@ Trials HD on the same SDK version; re-verify each before recording it here.
 ## Fix log
 | Address | Fix | Reason |
 |---|---|---|
+| BF.Splash module | `[[modules]]` entry commented out | Codegen loads all modules into one address space; Splash (0x83480000-0x83E10000) overlaps BF.Main, so Splash was analyzed from Main's bytes: 7299 bogus unresolved branches (2000/2000 sampled sources decode to the reported target only in BF.Main's image). Launcher's Splash load still to be handled |
+| BF.Main 0x83307A48, 0x830D25F8, 0x8366CE60, 0x832EB7E0 | `[modules.functions]` sizeless `{}` | Leaf functions in gaps between .pdata entries, reached only by tail-call `b` from 0x831103CC, 0x830DEBB4, 0x8366F714, 0x832EE868 |
+| Engine.BuildInfo .xidata 0x89010010..0x89010FE0 (254) | `{ size = 0x10 }` each, from `scripts/xidata_thunks.py` | Executable linker thunks `lis/addi r11; mtctr; bctr` with no .pdata; 8 were `b` targets (e.g. 0x89010940 from 0x8901E420). Import stubs later in .xidata left to the import table |
+| Engine.BuildInfo 0x89017EEC | sizeless `{}` | Leaf in a .text gap (andi. r0,r5,3; mtctr; beqlr), tail call from 0x89017F3C |
 
 ## Known notes
 - Module layout: Default.xex is a small launcher; the game is in DLL-type XEX modules (imports xam/xboxkrnl).

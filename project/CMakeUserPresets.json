@@ -1,0 +1,38 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "local-debug",
+      "inherits": "linux-amd64-debug",
+      "binaryDir": "${sourceDir}/out/build/local-debug",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_PREFIX_PATH": "/home/dustin/workspace/bf3-recomp/tools/rexglue-sdk"
+      }
+    },
+    {
+      "name": "win-cross-release",
+      "displayName": "Windows AMD64 Release (cross from Linux via xwin)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/out/build/win-cross-release",
+      "toolchainFile": "/home/dustin/workspace/bf3-recomp/tools/cross/win-amd64-xwin.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "rexglue_DIR": "/home/dustin/workspace/bf3-recomp/tools/cross/rexglue"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "local-debug",
+      "configurePreset": "local-debug",
+      "jobs": 6
+    },
+    {
+      "name": "win-cross-release",
+      "configurePreset": "win-cross-release",
+      "jobs": 6
+    }
+  ]
+}

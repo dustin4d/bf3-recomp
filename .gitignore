@@ -5,7 +5,8 @@ dump/
 *.image.bin
 # Build output, generated code, logs
 project/out/
-project/generated/
+project/generated/*
+!project/generated/rexglue.cmake
 logs/
 *.exe
 *.dll
