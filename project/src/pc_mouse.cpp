@@ -40,9 +40,19 @@ WNDPROC g_original_proc = nullptr;
 EventFn g_event = nullptr;
 std::atomic<bool> g_menu_mode{true};
 
-// Screens on which the mouse aims instead of pointing (gameplay HUD). Everything else is a menu.
-bool IsGameplayScreen(const std::string& screen) {
-  return screen.find("Hud") != std::string::npos || screen == "TabListenerScreen" || screen == "ChatLogScreen";
+// Gameplay (the mouse aims) when the live screen stack has the HUD and nothing menu-like on it; the stack keeps
+// hidden overlays (TabListenerScreen, ChatLogScreen, the Tab scoreboard, CrosshairDefault, DefaultTrackingScreen), so
+// the most recently pushed screen alone can't tell (the spawn screen ends with TabListenerScreen, gameplay with
+// DefaultTrackingScreen). Falls back to the top screen when the stack can't be read.
+bool IsGameplay(const std::string& live, const std::string& top) {
+  if (live.empty()) {
+    return top.find("Hud") != std::string::npos || top == "CrosshairDefault" || top == "DefaultTrackingScreen";
+  }
+  if (live.find("HudScreen") == std::string::npos) return false;
+  for (const char* menu : {"Menu", "Spawn", "Popup", "Options", "BackScreen", "Customiz", "EndOfRound", "Loading"}) {
+    if (live.find(menu) != std::string::npos) return false;
+  }
+  return true;
 }
 
 // Client point -> 0..1 across the game image (the 16:9 image is letterboxed/pillarboxed in the client area).
@@ -121,7 +131,7 @@ BOOL CALLBACK FindWindowProc(HWND hwnd, LPARAM out) {
 
 void UpdateMenuMode() {
   const std::string top = ui_state::TopScreen();
-  const bool menu = top.empty() || !IsGameplayScreen(top);
+  const bool menu = top.empty() || !IsGameplay(ui_state::LiveScreens(), top);
   if (menu != g_menu_mode.exchange(menu)) REXLOG_INFO("pc mouse: {} ({})", menu ? "menu mode" : "mouse look", top);
   rex::input::mnk::SetMouseLookActive(!menu);
   SetMenuTriggerMask(menu);

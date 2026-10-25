@@ -138,8 +138,23 @@ void PracticeOnMessage(uint8_t* base, uint32_t msg) {
 
 void PracticeRequestDeploy(int kit) { g_deploy_kit = kit; }
 
+extern "C" int bf3_ui_screen_list(char* out, int capacity);  // ui_screens.cpp
+
 // Main thread, every frame (level manager update, see level_boot.cpp).
 void PracticeTick(PPCContext& ctx, uint8_t* base) {
+  static const bool ui_trace = [] {
+    const char* v = std::getenv("BF3_UI_TRACE");
+    return v && *v == '1';
+  }();
+  if (ui_trace) {
+    static std::string last;
+    char buf[1024];
+    std::string now(buf, bf3_ui_screen_list(buf, sizeof(buf)));
+    if (now != last) {
+      REXLOG_INFO("ui: live screens [{}]", now);
+      last = now;
+    }
+  }
   static const int auto_kit = [] {
     const char* v = std::getenv("BF3_AUTO_DEPLOY");
     return v && *v ? std::atoi(v) : -1;

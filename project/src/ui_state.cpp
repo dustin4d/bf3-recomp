@@ -40,4 +40,22 @@ int ScreenCount(const std::string& name) {
 #endif
 }
 
+std::string LiveScreens() {
+#if defined(_WIN32)
+  using Fn = int (*)(char*, int);
+  static Fn fn = nullptr;
+  if (!fn) {
+    HMODULE module = GetModuleHandleW(L"bf3_BF_Main.dll");
+    if (!module) return {};
+    fn = reinterpret_cast<Fn>(GetProcAddress(module, "bf3_ui_screen_list"));
+    if (!fn) return {};
+  }
+  char buf[1024];
+  int n = fn(buf, sizeof(buf));
+  return std::string(buf, n > 0 ? n : 0);
+#else
+  return {};
+#endif
+}
+
 }  // namespace bf3::ui_state

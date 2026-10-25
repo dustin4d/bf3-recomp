@@ -336,6 +336,11 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
   BFServerSettings (BFServer.RoundStartPlayerCount etc.) don't reach the pre-round entity. BF3_MSG_TRACE=2 logs the first 3
   of every message type at the dispatcher (scripts/msg_names.py names them); lr 83C529EC = client->server delivery
   on the server, 83C51AE0 = server->client delivery.
+- UI screen stack: the UI manager (sub_8328B990's r3) keeps the live screens at +0x0C..+0x10 (screen +0x18 name);
+  ui_screens.cpp exports bf3_ui_screen_list (ui_state::LiveScreens), BF3_UI_TRACE=1 logs it on change. pc_mouse
+  uses it: mouse look only with HudScreen up and no Menu/Spawn/Popup/Options/BackScreen screen (the last pushed
+  screen is TabListenerScreen on the deploy screen and DefaultTrackingScreen in gameplay, so it can't tell).
+  In-game pause menu: IngameMenuMP.
 - Guest write watch: BF3_WATCH=<guest addr> BF3_WATCH_AT=<s> BF3_WATCH_ANY=1 logs the host stacks of the first
   writes to an 8-byte word through any view (found the LUT writer). BF3_LUT_TRACE=1 (lut_trace.cpp) logs the LUT jobs
   and their color matrices, BF3_FADE_TRACE=1 every fade request, BF3_CFG="Setting value;..." adds Game.cfg lines

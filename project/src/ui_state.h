@@ -10,5 +10,8 @@ namespace bf3::ui_state {
 std::string TopScreen();
 // How many times a screen with this name has been pushed so far.
 int ScreenCount(const std::string& name);
+// The UI manager's live screen stack, names joined by ';' (bottom first; includes hidden overlays such as
+// TabListenerScreen). "" when unknown.
+std::string LiveScreens();
 
 }  // namespace bf3::ui_state
