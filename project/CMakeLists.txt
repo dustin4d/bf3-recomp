@@ -14,6 +14,8 @@ include(generated/rexglue.cmake)
 set(BF3_SOURCES
     src/main.cpp
     src/launcher_hooks.cpp
+    src/crash_trace.cpp
+    src/gpu_readback_fix.cpp
 )
 
 if(WIN32)
@@ -30,6 +32,7 @@ if(TARGET bf3_BF_Main)
     target_sources(bf3_BF_Main PRIVATE
         src/bf_main/exit_trace.cpp
         src/bf_main/job_worker.cpp
+        src/bf_main/job_trace.cpp
     )
 endif()
 

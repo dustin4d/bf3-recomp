@@ -193,6 +193,21 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
   (interrupt disable on the console; no-op here).
 - `XMA: Write to unknown register (0601)` floods debug logs (same as Trials HD). `SpChunks.toc` open fails on Disc 1
   (it's Disc 2's campaign TOC): expected.
+- ROOT CAUSE of the job-system corruption (2026-10-25): GPU memexport readback. The game declares its whole 0x60000-byte
+  E-range heap F1A9F000 (phys 0x11AA0000) as a memexport target, and the job pool (head F1A9F180, nodes F1AA....) lives
+  in that heap. ReXGlue (readback_memexport defaults to TRUE, unlike Xenia) copies the whole declared range back
+  (IssueDraw_MemexportReadbackFull/FastPath -> memcpy(TranslatePhysical(base), readback, size)); the fast path even
+  copies the previous draw's data. That rolled the pool's tagged free-list head back ~40 updates -> double alloc ->
+  jobs run twice -> fn == 0 null calls and the hang. Found with a hardware write watch (BF3_WATCH, crash_trace.h) on the
+  head incl. its physical aliases: the writer was VCRUNTIME140!memcpy from rexgpu-xenos's command processor via the raw
+  physical view (host 0x200000000 + phys). E-range phys = (addr & 0x1FFFFFFF) + 0x1000.
+  - readback_memexport=false: no corruption, but the main thread then waits forever in the D3D GPU wait sub_82FCC8D8
+    (ring read pointer never advances; GPU Commands thread waits inside packet processing). readback_resolve
+    some/full doesn't change that. So the game needs some exported data in memory (likely a WAIT_REG_MEM on it).
+  - src/gpu_readback_fix.cpp (memcpy IAT hook in rexgpu-xenos.dll, shadow of uploads, write only bytes the GPU
+    changed, forces readback_memexport_fast=false): cuts written bytes from 2.1 MB to ~10 KB per 8 readbacks, but the
+    plugin's GPU copy of the heap is sometimes OLDER than the last upload (e.g. 0xDDDDDDDD vs 3F001FEF at +0x28), so
+    some stale bytes still land: fn==0 still occurs. Needs a GPU-side before/after diff in the plugin itself.
 - STATUS 2026-10-24 (end of session 1): boots through launcher -> BF.Main -> Engine.BuildInfo, renders the loading
   screen (tips, LOADING) via D3D12, loading screen fades out at ~13 s, then black + no logs (probable hang in/after the
   job system). Next: find the waiter (dump guest thread states at the hang; see who spins/waits on parent+48 or

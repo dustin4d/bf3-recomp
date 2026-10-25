@@ -23,6 +23,9 @@ if [[ -n "${SHOTS:-}" ]]; then
     > "$ROOT/logs/shots.stdout" 2>&1 &
 fi
 cd "$DEST" || exit 1
+# Forward BF3_* environment variables (e.g. BF3_JOB_SKIP_NULL=0) to the Windows process.
+for v in $(compgen -e | grep '^BF3_' || true); do WSLENV="${WSLENV:+$WSLENV:}$v"; done
+export WSLENV
 timeout "$SECS" ./bf3.exe "--game_data_root=C:\\Games\\BF3-recomp\\game" "--log_file=$UNC\\logs\\win-run.log" \
   "--user_data_root=$UNC\\logs\\win-userdata" "--log_level=$LEVEL" "--log_flush_interval=1" "$@" \
   > /dev/null 2>&1
