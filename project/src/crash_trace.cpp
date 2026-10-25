@@ -18,6 +18,8 @@ void InstallDiagnostics() {
   StartThreadDumpTimer(REXCVAR_GET(thread_dump_at), REXCVAR_GET(thread_dump_every));
   if (const char* w = std::getenv("BF3_WATCH")) {
     const char* at = std::getenv("BF3_WATCH_AT");
+    const char* any = std::getenv("BF3_WATCH_ANY");
+    g_watch_any = any && *any == '1';
     StartWatch(static_cast<uint32_t>(std::stoul(w, nullptr, 16)), at ? std::atoi(at) : 6);
   }
 #endif

@@ -368,7 +368,10 @@ extern "C" REX_FUNC(sub_833B0750) {
 // category, char* value}, +8 u32, +12 u32 array}, +0x3d bool. Strings are plain char*; the manager copies all of it.
 // Level manager (sub_833AF040's r3, sub_833B1500's r3): +0x1c current LevelSetup, +0x3d unloading, +0x65 unload
 // requested, +0x70 loaded level.
+void FadeWatchdogTick(PPCContext& ctx, uint8_t* base);  // fade_fix.cpp
+
 extern "C" REX_FUNC(sub_833AF040) {
+  FadeWatchdogTick(ctx, base);
   static bool boot_requested = false;
   static const bool direct = [] {
     const char* env = std::getenv("BF3_LEVEL_DIRECT");

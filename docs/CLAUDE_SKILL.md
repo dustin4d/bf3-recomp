@@ -44,13 +44,14 @@ and GhidraMCP.
   committed) with `patches/rexglue/*.patch` applied; `gpu_plugin/CMakeLists.txt` builds only `rexgpu-xenos.dll`
   (D3D12, like the prebuilt Windows SDK) against the prebuilt Windows SDK runtime via `rex::runtime`:
   ```bash
-  cd tools/rexglue-src && git checkout bd833a2a && git apply ../../patches/rexglue/*.patch && cd ../..
+  cd tools/rexglue-src && git checkout bd833a2a && git apply ../../patches/rexglue/*.patch && cd ../..   # 0001, 0002
   cmake -S gpu_plugin -B gpu_plugin/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_TOOLCHAIN_FILE=$PWD/tools/cross/win-amd64-xwin.cmake -Drexglue_DIR=$PWD/tools/cross/rexglue
   cmake --build gpu_plugin/build      # ~20 s; win_deploy.sh deploys it instead of the SDK's stock plugin
   ```
   Needs `-msse4.1` and `tools/cross/include-case/` (relative symlinks ObjBase.h, SDKDDKVer.h: xwin's headers are
-  lowercase). Patch 0001 = precise memexport readback (cvar `readback_memexport_precise`, default on).
+  lowercase). Patch 0001 = precise memexport readback (cvar `readback_memexport_precise`, default on). Patch 0002 =
+  16-bit integer resolves, integer texture fetch, small-resolve readback, GPU frame tracer, slow WAIT_REG_MEM log.
 - GhidraMCP: reachable from WSL (mirrored networking). Next phase: import `dump/Disc 1/game/Default.xex` and
   `BF.Main.xex` (then BF.Splash, Engine.BuildInfo) with XEXLoaderWV, confirm image md5s/bases above with
   `get_program_info`, then find how the launcher loads the DLL modules (XexLoadImage / XexLoadExecutable imports).
@@ -161,6 +162,10 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
 | GPU plugin: memexport readback | patches/rexglue/0001: snapshot export ranges before the draw, write back only bytes the draw changed | BF3 declares its whole GPU-writable heap F1A9F000 (0x60000, holds the job pool) as a memexport range; stock readback copied the whole range from the GPU copy and rolled back CPU writes (free-list ABA -> double alloc -> jobs run twice -> null calls, hang). With readback off the game waits forever on exported data. Result: title screen "PRESS START TO BEGIN" (2026-10-25) |
 | BF.Main sub_8346D590 (job worker) | `src/bf_main/job_worker.cpp`: faithful C++ port that skips fn == 0 | Run 9: no crash, ran 90 s; skipped 64-127 jobs in one burst at ~11 s, loading screen faded out (new tip), then black window + silent log = likely hang. OPEN: skipped jobs may not be "already finished" (published before fn written?), check who sets job hi bit 0 and who waits on parent+48 |
 | 33 sweep hits (BF.Main 18 incl. 0x838B2CFC, 0x83001C00; all 6 Default; all 9 Engine.BuildInfo) | commented out in manifest (`REMOVED`) | Interior labels inside .pdata functions (likely SEH handler/scope targets; same 0x5BC/0x848-byte CRT functions in all modules). 3 showed as codegen `Unresolved b target`, 0x83001C00 (bdz target in sub_83001B30) only as a compile error `undeclared label loc_83001C00`. find_unregistered.py now skips targets inside .pdata functions |
+| GPU plugin: resolve to 16-bit integer formats | patches/rexglue/0002 (util/draw.cpp GetResolveInfo): for k_16/k_16_16/k_16_16_16_16 destinations with number format UINT/SINT, rebase exp_bias by -16/-15 and resolve as UNORM/SNORM | BF3 resolves its 7e3 HDR scene to 16_16_16_16 UINT with exp_bias 11 (round(v * 2048)); the resolve shaders only pack normalized values (saturate * 65535), so every texel became 0xFFFF |
+| GPU plugin: texture fetch num_format INTEGER | patches/rexglue/0002 (dxbc_translator_fetch.cpp): when fetch constant dword 3 bit 0 is set, scale the fetched value by the format's max (255 / 65535, signed 127 / 32767) before exp_adjust | Host textures are normalized; BF3 fetches the HDR texture as integers with exp_adjust -11, so it read 65535x too dark |
+| GPU plugin: small resolves read back | patches/rexglue/0002: cvar `readback_resolve_small_max` (default 0x4000): with readback_resolve none, resolves up to that size are still copied back to guest memory (fast, one frame late) | The CPU reads the 32x1 average luminance resolve (0x1E364000) for the exposure |
+| BF.Main FadeManager (0x840BAE54) fade in sub_83247D38 | `src/bf_main/fade_fix.cpp`: if a FadeEntity's StartFaded (sub_83247E10, name 0x82DCF6C0) isn't followed by a fade in within 5 s, fade in (1 s) from the level manager update (level_boot.cpp sub_833AF040) | In MP levels started from PRACTICE the level's FadeEntity never gets its FadeIn event: the color grading LUT job (sub_83C8EB28, matrix from sub_83D1B078) used an all-zero matrix and the UI was faded too, so the screen stayed black |
 
 ## Known notes
 - Module layout: Default.xex is a small launcher; the game is in DLL-type XEX modules (imports xam/xboxkrnl).
@@ -299,12 +304,30 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
   (level_boot.cpp RequestLevel, Team Deathmatch). Result: PRACTICE -> OPERATION METRO -> client ingame, TDM spawn
   screens pushed, but the screen stays black (only the loading indicator). Server backend fallback (no Blaze) is
   unconditional now; level heap 160 MB by default.
-- In-level black screen (PRACTICE -> Metro): NOT a hang. Main loop runs 30 fps (BF3_MSG_TRACE logs it), GPU fences
-  advance (~420/s, gpu fence wait log), no WAIT_REG_MEM >200 ms. Spawn screens are pushed but the frame is black
-  except the loading spinner; console UI (BF3_UI_PLATFORM=xenon), --gpu_allow_invalid_fetch_constants=true and
-  --readback_resolve=fast don't change it. Likely the in-game renderer's final output (UI is composited through it).
-  Uncommitted diagnostic in tools/rexglue-src command_processor.cpp: slow WAIT_REG_MEM log (not in patches/ yet).
-  gpu_plugin now writes rexgpu-xenos.map for symbolized dumps.
+- In-level black screen (PRACTICE -> Metro), FIXED 2026-10-25: four causes, found with the GPU frame tracer (below).
+  1) resolve of the 7e3 HDR scene to 16_16_16_16 UINT exp_bias 11 saturated (0xFFFF); 2) the integer texture fetch
+  of it was normalized; 3) the CPU-read luminance resolve wasn't read back; 4) the level's FadeEntity starts faded and
+  its FadeIn never fires (fade_fix.cpp). Frame layout (Metro, 1280x704 internal, ~990 draws, 76 resolves): G-buffer
+  4 RTs at EDRAM 0 resolved to 0C2DC000.. (normals, albedo, ...), depth 10D48000, lighting into a 7e3 RT (format 12)
+  resolved to 0C2DC000 (HDR, uint * 2^11), bloom/luminance chain 0D2CC000.., log-luminance 32x1 -> 1E364000 (CPU
+  read), tonemap PS 4909D8C0B44D6AF8 samples HDR, bloom, vignette (k_8 at 10400000) and the 32^3 color grading LUT
+  at 1E343000 (built on the CPU by the job sub_83C8EB28: blend source LUTs, 4x4 color matrix + 3 curves in
+  sub_83C8E808, tile, copy), UI drawn after the composite, frontbuffer 11478000.
+- GPU frame tracer (patch 0002, cvars): `--gpu_frame_trace_at=<s>` (after the first swap) logs every draw (shader
+  hashes, RT/blend/depth regs, fetch constants of used textures, PS constants c0-c15/c252-c255 for rect lists) and
+  resolve of one frame (`gpu_frame_trace_every`, `gpu_frame_trace_frames`); `--gpu_frame_trace_dir=<UNC dir>` dumps
+  each resolve's destination; `--gpu_frame_trace_ranges=addr:len,...` dumps memory at trace start;
+  `--gpu_frame_trace_probe=true` also dumps float/fixed16 color resolves as 16_16_16_16_FLOAT (pre-conversion
+  values); `--gpu_watch_range=addr:len` logs resolves, memexports and CPU-write invalidations touching a range.
+  `scripts/ftrace_view.py <log> <dump dir> [png dir]` untiles the dumps, prints channel stats and writes PNGs plus a
+  labelled contact sheet. `scripts/practice_run.sh [secs] [level] [args]` = the PRACTICE -> Metro recipe (in level at
+  ~95 s). `--dump_shaders=<dir>` writes ucode disassembly (shader_<hash>.ucode.frag).
+- Guest write watch: BF3_WATCH=<guest addr> BF3_WATCH_AT=<s> BF3_WATCH_ANY=1 logs the host stacks of the first
+  writes to an 8-byte word through any view (found the LUT writer). BF3_LUT_TRACE=1 (lut_trace.cpp) logs the LUT jobs
+  and their color matrices, BF3_FADE_TRACE=1 every fade request, BF3_CFG="Setting value;..." adds Game.cfg lines
+  (GameRender.FadeEnable/FadeWaitingEnable false did not help).
+- Open: ROV path (--render_target_path_d3d12=rov) and --async_shader_compilation=false crashed during level load
+  (null read in sub_8314C4A8 from sub_8314F478), probably a timing race; not investigated.
 - Xbox LIVE removed: no sign-in spoofing (live_emulation.cpp deleted). Local online stack (bf_main/local_online.cpp,
   BF3_LOCAL_ONLINE=0 off): flow data 0x9E2114F5 (online state; sub_837F0090 from online manager 0x840D63D0+0x20)
   answered "Online"; 0x938E1FD9 HasStats (mysoldiergraph) true; player name (sub_830271A0 "xenon-retail" machine

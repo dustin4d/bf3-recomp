@@ -219,6 +219,7 @@ inline uint64_t g_watch_alias[3] = {};  // DR1-DR3: other views of the same phys
 inline std::atomic<uint32_t> g_watch_max_tag{0};
 inline std::atomic<uint32_t> g_watch_hits{0};
 inline std::atomic<int> g_watch_reports{0};
+inline bool g_watch_any = false;  // BF3_WATCH_ANY=1: log the stack of the first writes through any view
 struct WatchRecord {
   uint64_t seq, value;
   DWORD64 rip;
@@ -248,6 +249,20 @@ inline LONG CALLBACK WatchHandler(EXCEPTION_POINTERS* info) {
     return EXCEPTION_CONTINUE_EXECUTION;
   }
   g_watch_hits.fetch_add(1, std::memory_order_relaxed);
+  if (g_watch_any) {
+    if (g_watch_reports.fetch_add(1) < 6) {
+      REXLOG_ERROR("[crash_trace] WATCH: write {:016X} at {}",
+                   _byteswap_uint64(*reinterpret_cast<volatile uint64_t*>(g_watch_host)),
+                   AnyFrameName(info->ContextRecord->Rip));
+      ThreadStack st;
+      WalkStack(*info->ContextRecord, st);
+      for (int f = 0; f < st.count && f < 14; ++f) {
+        REXLOG_ERROR("[crash_trace]   #{:02} {}", f, AnyFrameName(st.pcs[f]));
+      }
+      rex::FlushLogging();
+    }
+    return EXCEPTION_CONTINUE_EXECUTION;
+  }
   uint64_t raw = *reinterpret_cast<volatile uint64_t*>(g_watch_host);
   uint64_t value = _byteswap_uint64(raw);
   {

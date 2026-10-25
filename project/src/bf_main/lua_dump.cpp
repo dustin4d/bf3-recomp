@@ -90,10 +90,30 @@ void OverrideLevel(uint8_t* text, uint32_t size) {
   REXLOG_INFO("level override: Game.Level {} ({})", level, layers);
 }
 
+// BF3_CFG="Setting value;Setting value": extra Game.cfg settings, written over the commented-out timeout block (not
+// with BF3_LEVEL_DIRECT, which uses that block), e.g. BF3_CFG="GameRender.FadeEnable false".
+void OverrideCfg(uint8_t* text, uint32_t size) {
+  static const char* env = std::getenv("BF3_CFG");
+  static const char* direct = std::getenv("BF3_LEVEL_DIRECT");
+  if (!env || !*env || (direct && *direct == '1')) return;
+  std::string chunk(reinterpret_cast<const char*>(text), size);
+  if (chunk.find(kTimeoutBlock) == std::string::npos) return;
+  std::string lines = env;
+  for (char& c : lines) {
+    if (c == ';') c = '\n';
+  }
+  std::string crlf;
+  for (char c : lines) crlf += c == '\n' ? std::string("\r\n") : std::string(1, c);
+  if (ReplaceBlock(text, chunk, kTimeoutBlock, crlf)) REXLOG_INFO("cfg override: {}", env);
+}
+
 }  // namespace
 
 extern "C" REX_FUNC(sub_838F7B38) {
-  if (ctx.r4.u32 && ctx.r5.u32) OverrideLevel(REX_RAW_ADDR(ctx.r4.u32), ctx.r5.u32);
+  if (ctx.r4.u32 && ctx.r5.u32) {
+    OverrideLevel(REX_RAW_ADDR(ctx.r4.u32), ctx.r5.u32);
+    OverrideCfg(REX_RAW_ADDR(ctx.r4.u32), ctx.r5.u32);
+  }
   if (const char* dir = DumpDir()) {
     const uint32_t buf = ctx.r4.u32, size = ctx.r5.u32, name_addr = ctx.r6.u32;
     std::string name = name_addr ? std::string(reinterpret_cast<const char*>(REX_RAW_ADDR(name_addr))) : "noname";
