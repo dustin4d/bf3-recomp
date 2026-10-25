@@ -331,7 +331,7 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
   SelectedUnlockAssets / SpawnOnSelected; server: sub_836C7AA0 spawns if player+0x3B4 == 0 and sub_8342C7D8(conn).
   BF3_AUTO_DEPLOY=<kit> deploys from the host 8 s after the spawn screen (tests). With the solo round start the
   soldier walks, turns, fires and reloads (pad script sticks: `LX=/LY=/RX=/RY=<-32768..32767>`, e.g.
-  `6000:LY=32767:3000;500:RT:1500`). The HUD keeps showing "WAITING FOR PLAYERS 7" (stale UI message).
+  `6000:LY=32767:3000;500:RT:1500`).
 - Open: level load hung once at the loading screen (14:42, BF3_CFG BFServer.* lines set; the rerun loaded).
   BFServerSettings (BFServer.RoundStartPlayerCount etc.) don't reach the pre-round entity. BF3_MSG_TRACE=2 logs the first 3
   of every message type at the dispatcher (scripts/msg_names.py names them); lr 83C529EC = client->server delivery

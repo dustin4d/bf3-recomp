@@ -18,7 +18,8 @@
 // sub_8307DAF0(iterator) until 0) gets its PreRoundEntityData (entity +0x14) RoundStartPlayerCount (+0x60) and
 // RoundRestartPlayerCount (+0x6C) set to 1. The entity works from copies it took at creation (+0xA4 start players,
 // +0xA8 restart players, +0xAC start countdown, +0xB0 restart countdown; players array +0x94..+0x98) and checks them
-// when a player enters or leaves (sub_837D3BE0): start = +0xB4 = +0xAC, +0xB8 |= 0x80, sub_83838328(entity, 1). The
+// when a player enters or leaves (sub_837D3BE0): start = +0xB4 = +0xAC, +0xB8 |= 0x80, sub_83838328(entity, 1),
+// replication dirty bit sub_83C5E700(entity + 0x80, 1). The
 // copies become 1 and 0 (never back to pre-round), and the round starts right away the same way.
 // BF3_PRACTICE_PREROUND=1 keeps the pre-round.
 //
@@ -41,6 +42,7 @@ REX_EXTERN(__imp__sub_836C7AA0);
 REX_EXTERN(sub_8307DB88);
 REX_EXTERN(sub_8307DAF0);
 REX_EXTERN(sub_83838328);
+REX_EXTERN(sub_83C5E700);
 
 namespace {
 
@@ -108,6 +110,10 @@ void SoloRound(PPCContext& ctx, uint8_t* base) {
       ctx.r3.u64 = entity;
       ctx.r4.u64 = 1;
       sub_83838328(ctx, base);
+      ctx.r1.u64 = r1;
+      ctx.r3.u64 = entity + 0x80;  // mark the replicated state dirty so clients see the round start
+      ctx.r4.u64 = 1;
+      sub_83C5E700(ctx, base);
       ctx.r1.u64 = r1;
     }
   }
