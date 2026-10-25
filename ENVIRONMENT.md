@@ -201,7 +201,7 @@ Create `/home/dustin/workspace/bf3-recomp/CLAUDE.md` (short: layout, build comma
 - [ ] Codegen produces C++ under `project/generated/`
 - [ ] Linux compile check links (after reconfigure)
 - [ ] Windows cross-build produces `bf3.exe` + runtime DLLs (check imports with `llvm-readobj --coff-imports`)
-- [ ] Ghidra loads the same executable and analysis finds functions
+- [x] Ghidra loads the same executable and analysis finds functions
 - [ ] GhidraMCP is reachable from WSL
 - [ ] `scripts/win_run.sh` deploys only to `TBD (Windows host dir)`, runs with logs pointed back into `logs/`, and
       refuses to run while the game is already open

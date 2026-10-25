@@ -42,7 +42,14 @@ and GhidraMCP.
 - Ghidra project: `C:\Users\Dustin\BF3-RECOMP` (user-created). `/modules/` = the four .xex imported with
   XEXLoaderWV, unanalyzed, untouched. `/merged/BF.Main.xex` = BF.Main + Default + Engine.BuildInfo at their real
   addresses + BF.Splash in overlay space `BF_Splash` (addresses `BF_Splash::83480000`): 38 blocks, 66770 functions
-  (from .pdata), labels/imports copied. Not yet auto-analyzed. Open `/merged/BF.Main.xex` for GhidraMCP.
+  (from .pdata), labels/imports copied. Open `/merged/BF.Main.xex` for GhidraMCP.
+- Auto-analyzed 2026-10-24 (headless, 12G heap, ~9.5 min) with **Non-Returning Functions - Discovered disabled**:
+  75695 functions, all 66770 .pdata entries kept (`python -I scripts/pdata_coverage.py logs/merged-functions.txt`).
+  With default options the same analysis cleared the code of 7686 .pdata functions (6795 BF.Main, 891 Splash; left as
+  undefined bytes, almost all preceded by padding, VMX128 not a factor). Keep that analyzer off for this project.
+- Remaining analysis noise: ~357 "Bad Instruction: Unable to resolve constructor" = VMX128 forms (primary ops 4/6)
+  that Ghidra's PowerPC:BE:64:A2ALT-32addr doesn't decode, in ~37 functions; only their decompiler output suffers
+  (ReXGlue has its own decoder). Two harmless "Invalid PNG data" errors in BF_Splash .rdata.
 - Verified with `BF3VerifyAgainstImage`: every block of all four modules matches `rex_extract image` byte for byte,
   except the tail of BF.Main `.reloc` (VA 0x841F0200, vsize 0x13DED0, runs 0xCE0D0 past the image end 0x84260000;
   the in-image part differs between the two decoders). XEXLoaderWV logs `ERROR out of input bytes
@@ -76,7 +83,15 @@ scripts/ghidra/headless.sh merge /merged -import "$(wslpath -w "dump/Disc 1/game
 scripts/ghidra/headless.sh verify-merged /merged -process BF.Main.xex -readOnly -noanalysis \
   -postScript BF3VerifyAgainstImage.java <BF.Main.image.bin> <Default...> <Engine.BuildInfo...> BF_Splash=<BF.Splash...>
 ```
-Headless gotchas: `-postScript` takes a script name only, and `C:\Users\Dustin\ghidra_scripts` wins over
+# Auto-analysis (also exports the function list for the .pdata check):
+GHIDRA_HEADLESS_MAXMEM=12G scripts/ghidra/headless.sh analyze /merged -process BF.Main.xex \
+  -preScript BF3SetAnalysisOptions.java "Non-Returning Functions - Discovered=false" \
+  -postScript BF3ExportFunctions.java "$(wslpath -w "$PWD/logs/merged-functions.txt")"
+python -I scripts/pdata_coverage.py logs/merged-functions.txt
+```
+Other scripts: `BF3ProbeAddresses.java <addrs.txt>` (what's at each address + Error/Warning bookmark counts).
+Headless gotchas: `wslpath -w` on a relative path gives a relative Windows path, so pass absolute paths.
+`-postScript` takes a script name only, and `C:\Users\Dustin\ghidra_scripts` wins over
 `-scriptPath`, so repo scripts carry a `BF3` prefix. The wrapper exits 1 on any ERROR line, including the
 harmless LZX one: read the log. Imports take about 1 min; the program image base stays 0 (XEX base is not applied).
 Nothing else verified yet for this project. `docs/reference/trialshd_CLAUDE_SKILL.md` has the forms that worked for
