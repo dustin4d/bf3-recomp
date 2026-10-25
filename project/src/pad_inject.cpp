@@ -5,7 +5,8 @@
 //   <ms>:<buttons>[:<hold ms>]   wait <ms> after the previous step, then press (hold default 150 ms)
 //   wait:<ScreenName>[#<n>]      wait until that UI screen is on top (ui_state, e.g. MainMenuScreen); with #n, until
 //                                it has been pushed n times (StartScreen#2 = the interactive title screen)
-// Buttons: A B X Y START BACK LB RB LS RS UP DOWN LEFT RIGHT LT RT, joined with '+'.
+// Buttons: A B X Y START BACK LB RB LS RS UP DOWN LEFT RIGHT LT RT, joined with '+'; sticks as LX=<v> LY=<v> RX=<v>
+// RY=<v> (-32768..32767, up/right positive), e.g. "2000:LY=32767+RT:3000" walks forward firing for 3 s.
 // Example: "wait:StartScreen;3000:START;wait:MainMenuScreen;2000:DOWN;500:A".
 // Works by redirecting bf3_BF_Main.dll's import of __imp__XamInputGetState (rexruntime.dll): the original runs first,
 // then the scripted buttons are OR'd into the guest XINPUT_STATE. If no real controller/keyboard device is connected,
@@ -20,6 +21,7 @@
 #include <rex/logging.h>
 #include <rex/ppc/context.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdlib>
 #include <cstring>
@@ -40,6 +42,7 @@ struct Step {
   uint16_t buttons;
   uint8_t lt, rt;
   std::string wait_screen;  // non-empty: a wait step
+  int16_t thumbs[4] = {};   // LX, LY, RX, RY
 };
 
 GuestFunc g_original = nullptr;
@@ -72,6 +75,13 @@ bool ParseButton(const std::string& name, Step& step) {
   }
   if (name == "LT") return step.lt = 0xFF, true;
   if (name == "RT") return step.rt = 0xFF, true;
+  static const char* kAxes[] = {"LX=", "LY=", "RX=", "RY="};
+  for (int a = 0; a < 4; ++a) {
+    if (name.compare(0, 3, kAxes[a]) == 0) {
+      step.thumbs[a] = static_cast<int16_t>(std::clamp(std::stoi(name.substr(3)), -32768, 32767));
+      return true;
+    }
+  }
   return false;
 }
 
@@ -85,11 +95,11 @@ void ParseScript(const std::string& script) {
     size_t c1 = item.find(':'), c2 = item.find(':', c1 + 1);
     if (c1 == std::string::npos) continue;
     if (item.compare(0, c1, "wait") == 0) {
-      Step wait{0, 0, 0, 0, 0, item.substr(c1 + 1)};
+      Step wait{0, 0, 0, 0, 0, item.substr(c1 + 1), {}};
       g_steps.push_back(wait);
       continue;
     }
-    Step step{static_cast<uint32_t>(std::stoul(item.substr(0, c1))), 150, 0, 0, 0, {}};
+    Step step{static_cast<uint32_t>(std::stoul(item.substr(0, c1))), 150, 0, 0, 0, {}, {}};
     std::string buttons = item.substr(c1 + 1, c2 == std::string::npos ? std::string::npos : c2 - c1 - 1);
     if (c2 != std::string::npos) step.hold_ms = static_cast<uint32_t>(std::stoul(item.substr(c2 + 1)));
     size_t b = 0;
@@ -133,11 +143,13 @@ void HookedXamInputGetState(PPCContext& ctx, uint8_t* base) {
   uint64_t now = GetTickCount64();
   uint16_t buttons = 0;
   uint8_t lt = 0, rt = 0;
+  const int16_t* thumbs = nullptr;
   {
     std::lock_guard<std::mutex> lock(g_script_mutex);
     if (!g_step_start) g_step_start = now;
     if (now < g_press_end) {
       buttons = g_pressing.buttons, lt = g_pressing.lt, rt = g_pressing.rt;
+      thumbs = g_pressing.thumbs;
     } else if (g_step < g_steps.size()) {
       const Step& s = g_steps[g_step];
       if (!s.wait_screen.empty()) {
@@ -155,6 +167,7 @@ void HookedXamInputGetState(PPCContext& ctx, uint8_t* base) {
         g_pressing = s;
         g_press_end = now + s.hold_ms;
         buttons = s.buttons, lt = s.lt, rt = s.rt;
+        thumbs = g_pressing.thumbs;
         ++g_step;
         g_step_start = g_press_end;
       }
@@ -165,13 +178,21 @@ void HookedXamInputGetState(PPCContext& ctx, uint8_t* base) {
     std::memset(p, 0, 16);
     ctx.r3.u64 = 0;
   }
-  if (!buttons && !lt && !rt) return;
+  const bool sticks = thumbs && (thumbs[0] || thumbs[1] || thumbs[2] || thumbs[3]);
+  if (!buttons && !lt && !rt && !sticks) return;
   uint32_t packet = g_packet.fetch_add(1);
   p[0] = uint8_t(packet >> 24), p[1] = uint8_t(packet >> 16), p[2] = uint8_t(packet >> 8), p[3] = uint8_t(packet);
   uint16_t cur = uint16_t(p[4] << 8 | p[5]) | buttons;
   p[4] = uint8_t(cur >> 8), p[5] = uint8_t(cur);
   p[6] |= lt;
   p[7] |= rt;
+  if (sticks) {
+    for (int a = 0; a < 4; ++a) {
+      if (!thumbs[a]) continue;
+      p[8 + a * 2] = uint8_t(uint16_t(thumbs[a]) >> 8);
+      p[9 + a * 2] = uint8_t(thumbs[a]);
+    }
+  }
 }
 
 }  // namespace

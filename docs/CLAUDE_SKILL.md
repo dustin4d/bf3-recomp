@@ -167,6 +167,7 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
 | GPU plugin: small resolves read back | patches/rexglue/0002: cvar `readback_resolve_small_max` (default 0x4000): with readback_resolve none, resolves up to that size are still copied back to guest memory (fast, one frame late) | The CPU reads the 32x1 average luminance resolve (0x1E364000) for the exposure |
 | BF.Main FadeManager (0x840BAE54) fade in sub_83247D38 | `src/bf_main/fade_fix.cpp`: if a FadeEntity's StartFaded (sub_83247E10, name 0x82DCF6C0) isn't followed by a fade in within 5 s, fade in (1 s) from the level manager update (level_boot.cpp sub_833AF040) | In MP levels started from PRACTICE the level's FadeEntity never gets its FadeIn event: the color grading LUT job (sub_83C8EB28, matrix from sub_83D1B078) used an all-zero matrix and the UI was faded too, so the screen stayed black |
 | BF.Main server team (ServerPlayer::setTeam sub_833CACD0, team at player+0x324) | `src/bf_main/practice.cpp`: the player that entered the level (ServerPlayerEnteredLevelMessage +0x28, seen in the dispatcher sub_83026CB8) gets team 1 (BF3_TEAM=2: RU) when the spawn screen appears; the server's network handler sub_836C7AA0 also applies NetworkSelectTeamMessage (+0x38) | Without a Blaze game nobody assigns a team: the player stays TeamNeutral, the spawn screen shows ID_M_NEUTRAL / "DEPLOY AS undefined" / kitItem_N and DEPLOY does nothing. sub_836C7AA0 ignores NetworkSelectTeamMessage in this build |
+| BF.Main ServerPreRoundEntity (type 0x8418958C, check sub_837D3BE0) | `src/bf_main/practice.cpp` SoloRound: at the spawn screen, every pre-round entity gets data +0x60/+0x6C = 1 and its copies +0xA4 = 1 (start players), +0xA8 = 0 (restart players), and the round starts (+0xB4 = +0xAC, +0xB8 |= 0x80, sub_83838328(entity, 1)) | TDM needs 8 players before the round starts; in pre-round the soldier can turn but not walk or fire |
 
 ## Known notes
 - Module layout: Default.xex is a small launcher; the game is in DLL-type XEX modules (imports xam/xboxkrnl).
@@ -328,7 +329,11 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
   Deploy path: UI action sub_836EE788 -> sub_837E0C90(spawn system = UI manager sub_83280730() vtable +0xD0
   (0x84197820, 1), kit, flag) -> NetworkSelectTeam (flag 0, no team) / PlayerSelectedWeapon x3 /
   SelectedUnlockAssets / SpawnOnSelected; server: sub_836C7AA0 spawns if player+0x3B4 == 0 and sub_8342C7D8(conn).
-  BF3_AUTO_DEPLOY=<kit> deploys from the host 8 s after the spawn screen (tests). BF3_MSG_TRACE=2 logs the first 3
+  BF3_AUTO_DEPLOY=<kit> deploys from the host 8 s after the spawn screen (tests). With the solo round start the
+  soldier walks, turns, fires and reloads (pad script sticks: `LX=/LY=/RX=/RY=<-32768..32767>`, e.g.
+  `6000:LY=32767:3000;500:RT:1500`). The HUD keeps showing "WAITING FOR PLAYERS 7" (stale UI message).
+- Open: level load hung once at the loading screen (14:42, BF3_CFG BFServer.* lines set; the rerun loaded).
+  BFServerSettings (BFServer.RoundStartPlayerCount etc.) don't reach the pre-round entity. BF3_MSG_TRACE=2 logs the first 3
   of every message type at the dispatcher (scripts/msg_names.py names them); lr 83C529EC = client->server delivery
   on the server, 83C51AE0 = server->client delivery.
 - Guest write watch: BF3_WATCH=<guest addr> BF3_WATCH_AT=<s> BF3_WATCH_ANY=1 logs the host stacks of the first
