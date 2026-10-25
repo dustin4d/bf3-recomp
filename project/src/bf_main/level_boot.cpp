@@ -3,13 +3,14 @@
 // Server backend: sub_8379E870(type r3, ...) creates a server backend through a factory table at 0x840DFBA4 indexed by
 // backend type; sub_836BB1E8 then calls the new object's vtable+12. On Xenon only types 2 and 3 are registered
 // (sub_8379E858 calls in bf3_recomp.158), and the front end creates type 2. Booting straight into an MP level selects
-// type 1 (no factory on Xenon), which called a null pointer. With BF3_LEVEL set, unregistered types fall back to 2.
+// type 1 (no factory on Xenon), which called a null pointer; so does the PRACTICE (dev menu) LoadLevel. Unregistered
+// types fall back to 2, the backend the front end runs on.
 //
 // Main heap: the default allocator 0x84041D50 is a fixed 48 MB region (sub_8301AAxx: VirtualAlloc wrapper
 // sub_838D1F28(0, 0x3000000) at 0x8301AAC4, then heap constructor sub_8301A610(heap, vt, type 2, base, size)). An MP
 // level loaded without the front end's teardown overflows it (level partitions alone hold ~13 MB), the allocator's
 // out-of-memory path returns null and sub_83013BA0 faults writing the block header. BF3_MAIN_HEAP_MB=<n> sizes the
-// region (default 48, or 160 when BF3_LEVEL is set); guest virtual memory has the room.
+// region (default 160; the game's own 48 with BF3_MAIN_HEAP_MB=48); guest virtual memory has the room.
 //
 // Level check: sub_83845C30(r3, level setup r4) returns false unless the setup's layer inclusion names an allowed value
 // for each category (GameMode: RushLarge0/1, ConquestLarge0/1, ConquestSmall0-3, SquadRush0-3, TeamDeathMatch0-3,
@@ -25,6 +26,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <mutex>
+#include <cctype>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -82,7 +84,7 @@ bool HeapTrace() {
 uint32_t MainHeapSize() {
   static const uint32_t size = [] {
     const char* env = std::getenv("BF3_MAIN_HEAP_MB");
-    uint32_t mb = env && *env ? uint32_t(std::atoi(env)) : (LevelBoot() ? 160 : 48);
+    uint32_t mb = env && *env ? uint32_t(std::atoi(env)) : 160;
     return std::clamp<uint32_t>(mb, 48, 512) << 20;
   }();
   return size;
@@ -90,6 +92,15 @@ uint32_t MainHeapSize() {
 
 uint32_t g_main_heap_base = 0;
 std::atomic<uint64_t> g_entered_ingame_ms{0};
+
+// A level switch waiting for the level manager to be idle: "<level>[:<category>=<value>]".
+std::mutex g_request_mutex;
+std::string g_request;
+
+void RequestLevel(const std::string& spec) {
+  std::lock_guard lock(g_request_mutex);
+  g_request = spec;
+}
 
 uint64_t NowMs() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
@@ -107,7 +118,8 @@ extern "C" REX_FUNC(sub_8379E870) {
     ctx.r3.u64 = uint32_t(forced);
   }
   const uint32_t type = ctx.r3.u32;
-  if (LevelBoot() && type < 4 && !REX_LOAD_U32(kFactoryTable + type * 4) &&
+  // Always (the local online stack has no Blaze): the dev menu's LoadLevel starts MP levels the same way.
+  if (type < 4 && !REX_LOAD_U32(kFactoryTable + type * 4) &&
       REX_LOAD_U32(kFactoryTable + kLocalBackend * 4)) {
     REXLOG_WARN("server backend: type {} has no factory, using {}", type, kLocalBackend);
     ctx.r3.u64 = kLocalBackend;
@@ -357,17 +369,24 @@ extern "C" REX_FUNC(sub_833B0750) {
 // Level manager (sub_833AF040's r3, sub_833B1500's r3): +0x1c current LevelSetup, +0x3d unloading, +0x65 unload
 // requested, +0x70 loaded level.
 extern "C" REX_FUNC(sub_833AF040) {
-  static bool done = false;
+  static bool boot_requested = false;
   static const bool direct = [] {
     const char* env = std::getenv("BF3_LEVEL_DIRECT");
     return env && *env == '1';
   }();
   const uint32_t manager = ctx.r3.u32;
   const uint64_t entered = g_entered_ingame_ms.load();
-  if (LevelBoot() && !direct && !done && entered && NowMs() - entered > 3000 && REX_LOAD_U32(manager + 0x70) &&
-      !REX_LOAD_U8(manager + 0x3d) && !REX_LOAD_U8(manager + 0x65)) {
-    done = true;
-    std::string level = std::getenv("BF3_LEVEL"), layers = "GameMode=TeamDeathMatch0";
+  if (LevelBoot() && !direct && !boot_requested && entered && NowMs() - entered > 3000) {
+    boot_requested = true;
+    RequestLevel(std::getenv("BF3_LEVEL"));
+  }
+  std::string request;
+  if (REX_LOAD_U32(manager + 0x70) && !REX_LOAD_U8(manager + 0x3d) && !REX_LOAD_U8(manager + 0x65)) {
+    std::lock_guard lock(g_request_mutex);
+    request.swap(g_request);
+  }
+  if (!request.empty()) {
+    std::string level = request, layers = "GameMode=TeamDeathMatch0";
     if (size_t colon = level.find(':'); colon != std::string::npos) {
       layers = level.substr(colon + 1);
       level.resize(colon);
@@ -411,4 +430,40 @@ extern "C" REX_FUNC(sub_833AF040) {
     }
   }
   __imp__sub_833AF040(ctx, base);
+}
+
+// UI action LoadLevel: the action table at 0x84016150 maps its key (0xE9F0E7F5) to a factory (sub_836DE440) for an
+// action object whose execute is sub_836EE268(action r3, params r4: **params = char*[] {level, optional mode}); it
+// hands them to sub_837E29A0, which stops the server and starts a new one on the level. The PRACTICE menu (the dev
+// screen, see main_menu.cpp) uses it. The client can't connect while that new server loads (its connection drops
+// after ~7 s and the game returns to the menu), so multiplayer levels are switched in place on the running server
+// instead, as BF3_LEVEL does, in Team Deathmatch; other levels take the engine's path.
+REX_EXTERN(__imp__sub_836EE268);
+
+extern "C" REX_FUNC(sub_836EE268) {
+  std::string level;
+  if (const uint32_t params = ctx.r4.u32) {
+    const uint32_t array = REX_LOAD_U32(REX_LOAD_U32(params));
+    if (array && REX_LOAD_U32(array - 4) > 0) {
+      if (const uint32_t name = REX_LOAD_U32(array)) level = reinterpret_cast<const char*>(REX_RAW_ADDR(name));
+    }
+  }
+  std::string lower = level;
+  for (char& c : lower) c = char(std::tolower(static_cast<unsigned char>(c)));
+  if (lower.find("levels/mp_") != std::string::npos || lower.rfind("mp_", 0) == 0) {
+    REXLOG_INFO("practice: {} (switched in place on the local server)", level);
+    RequestLevel(level);
+    return;
+  }
+  REXLOG_INFO("practice: '{}' (engine load)", level);
+  __imp__sub_836EE268(ctx, base);
+}
+
+// Diagnostic (BF3_MSG_TRACE=1): UI actions reaching the dispatcher sub_834131A0(handler r3, action r4: +4 key).
+REX_EXTERN(__imp__sub_834131A0);
+extern "C" REX_FUNC(sub_834131A0) {
+  if (MsgTrace() && ctx.r4.u32) {
+    REXLOG_INFO("ui action {:08X} flags {:04X}", REX_LOAD_U32(ctx.r4.u32 + 4), REX_LOAD_U16(ctx.r3.u32 + 8));
+  }
+  __imp__sub_834131A0(ctx, base);
 }

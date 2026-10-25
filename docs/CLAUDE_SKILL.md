@@ -292,6 +292,13 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
   STORE removed, ID_M_EXTRA strings renamed EXIT (unknown IDs show as-is); ExtraMenuScreen push = quit flag.
   Flow graphs: scripts/ebx_dump.py <ebx> (Xenon EBX: u32 header, instances each preceded by a GUID, arrays after
   the instance payload) and scripts/ui_graph.py <dump> <port> (follow UINodeConnections from a port).
+- PRACTICE (main menu): the hidden DEV MENU item (+0x25 ExcludeInRetail cleared, strings renamed in place) opens
+  DevScreen, DICE's level select (SP / MP / co-op). Its LoadLevel action (table 0x84016150: key 0xE9F0E7F5 ->
+  factory sub_836DE440 -> execute sub_836EE268(action, params: char*[] {level, mode})) restarts the server, which the
+  client can't join while it loads (drops after ~7 s); MP levels are instead switched in place on the running server
+  (level_boot.cpp RequestLevel, Team Deathmatch). Result: PRACTICE -> OPERATION METRO -> client ingame, TDM spawn
+  screens pushed, but the screen stays black (only the loading indicator). Server backend fallback (no Blaze) is
+  unconditional now; level heap 160 MB by default.
 - Xbox LIVE removed: no sign-in spoofing (live_emulation.cpp deleted). Local online stack (bf_main/local_online.cpp,
   BF3_LOCAL_ONLINE=0 off): flow data 0x9E2114F5 (online state; sub_837F0090 from online manager 0x840D63D0+0x20)
   answered "Online"; 0x938E1FD9 HasStats (mysoldiergraph) true; player name (sub_830271A0 "xenon-retail" machine

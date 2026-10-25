@@ -92,6 +92,15 @@ std::string NameAt(uint8_t* base, uint32_t item) {
 void PatchMainMenu(uint8_t* base) {
   const std::vector<Region> regions = Regions();
 
+  // DEV MENU (hidden in retail: +0x25 ExcludeInRetail) becomes PRACTICE: the dev screen's level loader.
+  int unhidden = 0;
+  for (uint32_t item : FindPointers(base, regions, FindStrings(base, regions, "DEV MENU"))) {
+    if (NameAt(base, item - kItemSize) != "ID_M_STORE" && NameAt(base, item - kItemSize) != "ID_M_OPTIONS") continue;
+    base[item + 0x25] = 0;
+    ++unhidden;
+  }
+  for (uint32_t s : FindStrings(base, regions, "DEV MENU")) std::memcpy(REX_RAW_ADDR(s), "PRACTICE", 8);
+
   // STORE: remove its element from the item array.
   const std::vector<uint32_t> store = FindStrings(base, regions, "ID_M_STORE");
   int removed = 0;
@@ -115,7 +124,8 @@ void PatchMainMenu(uint8_t* base) {
     std::memcpy(REX_RAW_ADDR(s), "EXIT\0\0\0\0\0\0\0", 11);  // no Xbox localization for an exit ID: unknown IDs show as-is
     ++renamed;
   }
-  REXLOG_INFO("main menu: removed STORE from {} list(s), renamed EXTRAS to EXIT in {} place(s)", removed, renamed);
+  REXLOG_INFO("main menu: removed STORE from {} list(s), renamed EXTRAS to EXIT in {} place(s), PRACTICE shown in {}",
+              removed, renamed, unhidden);
 }
 
 }  // namespace
