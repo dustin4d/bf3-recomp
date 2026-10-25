@@ -26,6 +26,8 @@
 #include <cstring>
 #include <cstdlib>
 #include <mutex>
+#include <unordered_map>
+#include <unordered_set>
 #include <cctype>
 #include <string>
 #include <unordered_map>
@@ -269,7 +271,10 @@ extern "C" REX_FUNC(sub_83034E28) {
 // 0x7C813E9E, type 0xE913E8AC) sets client+473, which makes the client update return false and the game exit.
 extern "C" REX_FUNC(sub_831D43E0) {
   const uint32_t msg = ctx.r4.u32;
-  if (MsgTrace()) REXLOG_INFO("client msg {:08X}/{:08X}", REX_LOAD_U32(msg + 4), REX_LOAD_U32(msg + 8));
+  if (MsgTrace()) {
+    REXLOG_INFO("client msg {:08X}/{:08X} lr {:08X}", REX_LOAD_U32(msg + 4), REX_LOAD_U32(msg + 8),
+                static_cast<uint32_t>(ctx.lr));
+  }
   if (REX_LOAD_U32(msg + 4) == 0x7C813E9E && REX_LOAD_U32(msg + 8) == 0x68AFE2B5) {  // CoreEnteredIngameMessage
     g_entered_ingame_ms = NowMs();
   }
@@ -369,9 +374,11 @@ extern "C" REX_FUNC(sub_833B0750) {
 // Level manager (sub_833AF040's r3, sub_833B1500's r3): +0x1c current LevelSetup, +0x3d unloading, +0x65 unload
 // requested, +0x70 loaded level.
 void FadeWatchdogTick(PPCContext& ctx, uint8_t* base);  // fade_fix.cpp
+void PracticeTick(PPCContext& ctx, uint8_t* base);      // practice.cpp
 
 extern "C" REX_FUNC(sub_833AF040) {
   FadeWatchdogTick(ctx, base);
+  PracticeTick(ctx, base);
   static bool boot_requested = false;
   static const bool direct = [] {
     const char* env = std::getenv("BF3_LEVEL_DIRECT");
@@ -504,4 +511,29 @@ extern "C" REX_FUNC(sub_82FE7898) {
     }
   }
   __imp__sub_82FE7898(ctx, base);
+}
+
+// The message dispatcher sub_83026CB8(manager r3, message r4: +4 category, +8 type): practice.cpp watches it;
+// diagnostic (BF3_MSG_TRACE=2) logs the first three occurrences of every message type.
+REX_EXTERN(__imp__sub_83026CB8);
+void PracticeOnMessage(uint8_t* base, uint32_t msg);  // practice.cpp
+
+extern "C" REX_FUNC(sub_83026CB8) {
+  if (ctx.r4.u32) PracticeOnMessage(base, ctx.r4.u32);
+  static const bool all = [] {
+    const char* env = std::getenv("BF3_MSG_TRACE");
+    return env && *env == '2';
+  }();
+  if (all && ctx.r4.u32) {
+    static std::mutex seen_mutex;
+    static std::unordered_map<uint64_t, int> seen;
+    const uint64_t key = uint64_t(REX_LOAD_U32(ctx.r4.u32 + 4)) << 32 | REX_LOAD_U32(ctx.r4.u32 + 8);
+    bool first;
+    {
+      std::lock_guard lock(seen_mutex);
+      first = ++seen[key] <= 3;
+    }
+    if (first) REXLOG_INFO("msg {:08X}/{:08X} (lr {:08X})", uint32_t(key >> 32), uint32_t(key), uint32_t(ctx.lr));
+  }
+  __imp__sub_83026CB8(ctx, base);
 }

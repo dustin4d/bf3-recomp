@@ -50,6 +50,8 @@ extern "C" __declspec(dllexport) int bf3_ui_screen_count(const char* name) {
   return it == g_push_counts.end() ? 0 : it->second;
 }
 
+void PracticeScreenPushed(const std::string& name);  // practice.cpp
+
 extern "C" REX_FUNC(sub_8328B990) {
   const uint32_t screen = ctx.r4.u32;
   if (screen) {
@@ -57,6 +59,7 @@ extern "C" REX_FUNC(sub_8328B990) {
     REXLOG_INFO("ui: push screen '{}' ({:08X})", name, screen);
     bf3_ui_screen_pushed(name);
     bf3_main_menu_before_push(base, name);
+    PracticeScreenPushed(name);
     // The movie the screens live in: manager+48 -> holder, holder+12 -> GFxMovieRoot (ui_mouse.cpp feeds it).
     if (const uint32_t holder = REX_LOAD_U32(ctx.r3.u32 + 48)) g_main_movie = REX_LOAD_U32(holder + 12);
     std::lock_guard<std::mutex> lock(g_mutex);

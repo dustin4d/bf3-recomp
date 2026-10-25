@@ -166,6 +166,7 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
 | GPU plugin: texture fetch num_format INTEGER | patches/rexglue/0002 (dxbc_translator_fetch.cpp): when fetch constant dword 3 bit 0 is set, scale the fetched value by the format's max (255 / 65535, signed 127 / 32767) before exp_adjust | Host textures are normalized; BF3 fetches the HDR texture as integers with exp_adjust -11, so it read 65535x too dark |
 | GPU plugin: small resolves read back | patches/rexglue/0002: cvar `readback_resolve_small_max` (default 0x4000): with readback_resolve none, resolves up to that size are still copied back to guest memory (fast, one frame late) | The CPU reads the 32x1 average luminance resolve (0x1E364000) for the exposure |
 | BF.Main FadeManager (0x840BAE54) fade in sub_83247D38 | `src/bf_main/fade_fix.cpp`: if a FadeEntity's StartFaded (sub_83247E10, name 0x82DCF6C0) isn't followed by a fade in within 5 s, fade in (1 s) from the level manager update (level_boot.cpp sub_833AF040) | In MP levels started from PRACTICE the level's FadeEntity never gets its FadeIn event: the color grading LUT job (sub_83C8EB28, matrix from sub_83D1B078) used an all-zero matrix and the UI was faded too, so the screen stayed black |
+| BF.Main server team (ServerPlayer::setTeam sub_833CACD0, team at player+0x324) | `src/bf_main/practice.cpp`: the player that entered the level (ServerPlayerEnteredLevelMessage +0x28, seen in the dispatcher sub_83026CB8) gets team 1 (BF3_TEAM=2: RU) when the spawn screen appears; the server's network handler sub_836C7AA0 also applies NetworkSelectTeamMessage (+0x38) | Without a Blaze game nobody assigns a team: the player stays TeamNeutral, the spawn screen shows ID_M_NEUTRAL / "DEPLOY AS undefined" / kitItem_N and DEPLOY does nothing. sub_836C7AA0 ignores NetworkSelectTeamMessage in this build |
 
 ## Known notes
 - Module layout: Default.xex is a small launcher; the game is in DLL-type XEX modules (imports xam/xboxkrnl).
@@ -322,6 +323,14 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
   `scripts/ftrace_view.py <log> <dump dir> [png dir]` untiles the dumps, prints channel stats and writes PNGs plus a
   labelled contact sheet. `scripts/practice_run.sh [secs] [level] [args]` = the PRACTICE -> Metro recipe (in level at
   ~95 s). `--dump_shaders=<dir>` writes ucode disassembly (shader_<hash>.ucode.frag).
+- PRACTICE deploy (2026-10-25): with the team set, the spawn screen shows the kit (ASSAULT: M16A3, M9, medic kit,
+  defibrillator, squad sprint) and clicking DEPLOY spawns the soldier (pre-round "WAITING FOR PLAYERS, 7 needed").
+  Deploy path: UI action sub_836EE788 -> sub_837E0C90(spawn system = UI manager sub_83280730() vtable +0xD0
+  (0x84197820, 1), kit, flag) -> NetworkSelectTeam (flag 0, no team) / PlayerSelectedWeapon x3 /
+  SelectedUnlockAssets / SpawnOnSelected; server: sub_836C7AA0 spawns if player+0x3B4 == 0 and sub_8342C7D8(conn).
+  BF3_AUTO_DEPLOY=<kit> deploys from the host 8 s after the spawn screen (tests). BF3_MSG_TRACE=2 logs the first 3
+  of every message type at the dispatcher (scripts/msg_names.py names them); lr 83C529EC = client->server delivery
+  on the server, 83C51AE0 = server->client delivery.
 - Guest write watch: BF3_WATCH=<guest addr> BF3_WATCH_AT=<s> BF3_WATCH_ANY=1 logs the host stacks of the first
   writes to an 8-byte word through any view (found the LUT writer). BF3_LUT_TRACE=1 (lut_trace.cpp) logs the LUT jobs
   and their color matrices, BF3_FADE_TRACE=1 every fade request, BF3_CFG="Setting value;..." adds Game.cfg lines
