@@ -220,6 +220,15 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
     changed, forces readback_memexport_fast=false): cuts written bytes from 2.1 MB to ~10 KB per 8 readbacks, but the
     plugin's GPU copy of the heap is sometimes OLDER than the last upload (e.g. 0xDDDDDDDD vs 3F001FEF at +0x28), so
     some stale bytes still land: fn==0 still occurs. Needs a GPU-side before/after diff in the plugin itself.
+- UI screens (src/bf_main/ui_screens.cpp hooks sub_8328B990 = push screen, name at *(screen+0x18); exported
+  bf3_ui_top_screen / bf3_ui_screen_count, read by src/ui_state.cpp). Seen: ComCenterHeaderScreen, StartScreen (pushed
+  at load, again when the title is interactive, again after the idle loop), PopupGeneric, EmptyScreen, MainMenuScreen,
+  OptionsNavigationXenonScreen + Options{Controls,Gameplay,Audio,Video}ConsoleScreen, ExtraMenuScreen,
+  GoOnlineLoadingScreen (Multiplayer). Multiplayer/Co-op/My Soldier: PopupGeneric "sign in to Xbox LIVE".
+  Pad script: `wait:StartScreen#2;3000:START;3000:START;3000:START;wait:MainMenuScreen;4000:DOWN;...`
+- Contact sheets: `scripts/contact_sheet.sh <first> <count> <out.png> [cols]` (ffmpeg tile of logs/shots).
+- Lua: only config/startup (Scripts/Game/Startup.lua, getTableAsString); BF3_LUA_DUMP=<dir> dumps chunks
+  (src/bf_main/lua_dump.cpp hooks luaL_loadbuffer sub_838F7B38). Menus are Scaleform (instance1.pushScreen).
 - STATUS 2026-10-25 23:00: MAIN MENU reached (CAMPAIGN, MULTIPLAYER, CO-OP, MY SOLDIER, OPTIONS, STORE, EXTRAS; Battle
   Feed "YOU ARE OFFLINE"). Title screen at ~50 s, START -> main menu. Scripted input:
   `BF3_PAD_SCRIPT="55000:START;60000:START;66000:A" scripts/win_run.sh 95 info` (src/pad_inject.cpp hooks

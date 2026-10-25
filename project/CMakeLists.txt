@@ -17,6 +17,7 @@ set(BF3_SOURCES
     src/crash_trace.cpp
     src/pad_inject.cpp
     src/pc_input.cpp
+    src/ui_state.cpp
 )
 
 if(WIN32)
@@ -34,6 +35,8 @@ if(TARGET bf3_BF_Main)
         src/bf_main/exit_trace.cpp
         src/bf_main/job_worker.cpp
         src/bf_main/job_trace.cpp
+        src/bf_main/lua_dump.cpp
+        src/bf_main/ui_screens.cpp
     )
 endif()
 
