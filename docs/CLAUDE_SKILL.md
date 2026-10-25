@@ -336,6 +336,12 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
   BFServerSettings (BFServer.RoundStartPlayerCount etc.) don't reach the pre-round entity. BF3_MSG_TRACE=2 logs the first 3
   of every message type at the dispatcher (scripts/msg_names.py names them); lr 83C529EC = client->server delivery
   on the server, 83C51AE0 = server->client delivery.
+- PRACTICE launcher (src/pc_practice.cpp, host screen): opens over DevScreen when PRACTICE is clicked. Map (the 9
+  Disc 1 MP maps), game mode (TeamDeathMatch0, SquadDeathMatch0, ConquestLarge0, RushLarge0, SquadRush0), team; LAUNCH
+  -> bf3_practice_set_team + bf3_practice_launch (DLL exports; in-place level switch). DEVELOPER MENU keeps DICE's
+  screen, BACK pulses B. BF3_PRACTICE_AUTO=<map id>:<mode>:<team> launches by itself 2 s after opening (tests).
+  Verified: Metro TDM, Grand Bazaar TDM, Metro Conquest (RU). Host screens that block game input also stop the menu
+  mouse (pad_inject GameInputBlocked).
 - UI screen stack: the UI manager (sub_8328B990's r3) keeps the live screens at +0x0C..+0x10 (screen +0x18 name);
   ui_screens.cpp exports bf3_ui_screen_list (ui_state::LiveScreens), BF3_UI_TRACE=1 logs it on change. pc_mouse
   uses it: mouse look only with HudScreen up and no Menu/Spawn/Popup/Options/BackScreen screen (the last pushed

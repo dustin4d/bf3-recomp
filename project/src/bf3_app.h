@@ -12,6 +12,7 @@
 #include "pc_mouse.h"
 #include "pc_settings.h"
 #include "pad_inject.h"
+#include "pc_practice.h"
 #include "pc_input.h"
 
 namespace bf3 {
@@ -66,6 +67,7 @@ class Bf3App : public rex::ReXApp {
   void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {
     bf3::pc_settings::Init(drawer, &app_context(), config_path_);
     bf3::local_profile::CreateDialogs(drawer);
+    bf3::pc_practice::CreateDialogs(drawer);
   }
   // std::unique_ptr<rex::ui::ImGuiDialog> CreateAchievementsOverlay() override;
   // std::unique_ptr<rex::ui::AchievementNotificationDialog>

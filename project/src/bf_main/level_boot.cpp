@@ -442,6 +442,14 @@ extern "C" REX_FUNC(sub_833AF040) {
   __imp__sub_833AF040(ctx, base);
 }
 
+// Read by bf3.exe (pc_practice.cpp): switch the running local server to a multiplayer level,
+// "<level>[:<category>=<value>]" (e.g. "Levels/MP_001/MP_001:GameMode=ConquestLarge0").
+extern "C" __declspec(dllexport) void bf3_practice_launch(const char* spec) {
+  if (!spec || !*spec) return;
+  REXLOG_INFO("practice: {} (switched in place on the local server)", spec);
+  RequestLevel(spec);
+}
+
 // UI action LoadLevel: the action table at 0x84016150 maps its key (0xE9F0E7F5) to a factory (sub_836DE440) for an
 // action object whose execute is sub_836EE268(action r3, params r4: **params = char*[] {level, optional mode}); it
 // hands them to sub_837E29A0, which stops the server and starts a new one on the level. The PRACTICE menu (the dev

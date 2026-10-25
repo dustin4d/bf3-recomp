@@ -201,6 +201,8 @@ std::shared_mutex& InputLock() { return g_input_lock; }
 
 void SetGameInputBlocked(bool blocked) { g_blocked = blocked; }
 
+bool GameInputBlocked() { return g_blocked; }
+
 void SetMenuTriggerMask(bool masked) { g_mask_triggers = masked; }
 
 void PulseButtons(uint16_t buttons, uint32_t ms) {

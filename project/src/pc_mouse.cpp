@@ -72,7 +72,7 @@ bool Normalize(HWND hwnd, int x, int y, float& nx, float& ny) {
   return true;
 }
 
-bool Forwarding() { return g_event && g_menu_mode && !pc_settings::IsOpen(); }
+bool Forwarding() { return g_event && g_menu_mode && !pc_settings::IsOpen() && !GameInputBlocked(); }
 
 LRESULT CALLBACK Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
   if (Forwarding()) {

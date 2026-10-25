@@ -16,6 +16,7 @@ std::shared_mutex& InputLock();
 
 // While set, the game sees an idle controller (a host screen such as PC Settings is open).
 void SetGameInputBlocked(bool blocked);
+bool GameInputBlocked();
 
 // While set, the game sees no triggers (menu mouse mode: the mouse buttons are bound to the triggers, but in menus a
 // click goes to the menu as a click; see pc_mouse.cpp).

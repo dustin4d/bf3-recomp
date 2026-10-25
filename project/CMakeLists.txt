@@ -23,6 +23,7 @@ set(BF3_SOURCES
     src/pc_mouse.cpp
     src/local_profile.cpp
     src/pc_settings.cpp
+    src/pc_practice.cpp
 )
 
 if(WIN32)

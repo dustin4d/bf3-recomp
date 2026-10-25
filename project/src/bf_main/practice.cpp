@@ -60,12 +60,12 @@ std::atomic<uint32_t> g_entered_player{0};  // ServerPlayer that last entered a 
 std::atomic<bool> g_team_pending{false};
 std::atomic<bool> g_preround_pending{false};
 
+std::atomic<uint32_t> g_team{0};  // 0: BF3_TEAM (default 1, US)
+
 uint32_t PreferredTeam() {
-  static const uint32_t team = [] {
-    const char* v = std::getenv("BF3_TEAM");
-    return v && *v == '2' ? 2u : 1u;
-  }();
-  return team;
+  if (const uint32_t team = g_team.load()) return team;
+  const char* v = std::getenv("BF3_TEAM");
+  return v && *v == '2' ? 2u : 1u;
 }
 
 void SetTeam(PPCContext& ctx, uint8_t* base, uint32_t player, uint32_t team) {
@@ -137,6 +137,11 @@ void PracticeOnMessage(uint8_t* base, uint32_t msg) {
 }
 
 void PracticeRequestDeploy(int kit) { g_deploy_kit = kit; }
+
+// Read by bf3.exe (pc_practice.cpp): the team (1 US, 2 RU) a player without a team gets in the next level.
+extern "C" __declspec(dllexport) void bf3_practice_set_team(int team) {
+  if (team == 1 || team == 2) g_team = uint32_t(team);
+}
 
 extern "C" int bf3_ui_screen_list(char* out, int capacity);  // ui_screens.cpp
 
