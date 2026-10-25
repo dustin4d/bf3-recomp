@@ -17,8 +17,11 @@ fi
 
 mkdir -p "$DEST"
 copied=0
+# Our patched GPU plugin (gpu_plugin/, patches/rexglue/) replaces the SDK's stock one staged by the build.
+PATCHED_GPU=$ROOT/gpu_plugin/build/rexgpu-xenos.dll
 for f in "$BUILD"/bf3.exe "$BUILD"/*.dll; do
   name=$(basename "$f")
+  [[ $name == rexgpu-xenos.dll && -f $PATCHED_GPU ]] && f=$PATCHED_GPU
   if ! cmp -s "$f" "$DEST/$name"; then
     cp "$f" "$DEST/"
     echo "copied  $name ($(du -h "$f" | cut -f1))"

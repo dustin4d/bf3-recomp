@@ -19,3 +19,4 @@ tools/*
 # Local tool builds
 scripts/*/build/
 __pycache__/
+gpu_plugin/build/

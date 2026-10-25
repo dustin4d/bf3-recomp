@@ -1,0 +1,1 @@
+../../xwin/sdk/include/shared/sdkddkver.h

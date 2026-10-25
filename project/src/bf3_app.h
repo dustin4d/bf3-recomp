@@ -6,11 +6,6 @@
 
 #include <rex/filesystem.h>
 
-#include <rex/cvar.h>
-#include <rex/system/xmemory.h>
-
-#include "gpu_readback_fix.h"
-
 namespace bf3 {
 void InstallDiagnostics();  // crash_trace.cpp
 }
@@ -28,15 +23,10 @@ class Bf3App : public rex::ReXApp {
 
   // Default to the xenos GPU plugin (staged next to the exe by GPU_PLUGINS xenos) unless --gpu_plugin is given.
   // Without one the game stalls after VdInitializeRingBuffer ("no GPU emulation loaded").
-  // The precise memexport readback (gpu_readback_fix.cpp) needs the synchronous readback path.
+  // Memexport readback must be precise (patches/rexglue/0001: gpu_plugin/ builds the patched rexgpu-xenos.dll).
   void OnPreSetup(rex::RuntimeConfig& config) override {
     if (config.gpu_plugin.empty()) config.gpu_plugin = "xenos";
-    if (!rex::cvar::HasNonDefaultValue("readback_memexport_fast")) {
-      rex::cvar::SetFlagByName("readback_memexport_fast", "false");
-    }
   }
-
-  void OnPostSetup() override { bf3::InstallGpuReadbackFix(runtime()->memory()); }
 
   // Without --game_data_root, use game\ next to the exe (C:\Games\BF3-recomp\game), so a double-click works.
   void OnConfigurePaths(rex::PathConfig& paths) override {

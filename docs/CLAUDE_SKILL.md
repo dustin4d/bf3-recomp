@@ -40,6 +40,17 @@ and GhidraMCP.
   10.0.26100, same files as the Trials HD setup). Cache in `tools/xwin-cache/`, log `logs/xwin-splat.log`.
 - `tools/cross/` (committed): `win-amd64-xwin.cmake` toolchain + `rexglue/` wrapper package (Windows SDK config,
   codegen pointed at the Linux binary), copied from Trials HD. Gotchas in the reference doc. Not yet exercised here.
+- **Patched GPU plugin** (required): `tools/rexglue-src` = ReXGlue source at bf3-sdk commit bd833a2a (git clone, not
+  committed) with `patches/rexglue/*.patch` applied; `gpu_plugin/CMakeLists.txt` builds only `rexgpu-xenos.dll`
+  (D3D12, like the prebuilt Windows SDK) against the prebuilt Windows SDK runtime via `rex::runtime`:
+  ```bash
+  cd tools/rexglue-src && git checkout bd833a2a && git apply ../../patches/rexglue/*.patch && cd ../..
+  cmake -S gpu_plugin -B gpu_plugin/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_TOOLCHAIN_FILE=$PWD/tools/cross/win-amd64-xwin.cmake -Drexglue_DIR=$PWD/tools/cross/rexglue
+  cmake --build gpu_plugin/build      # ~20 s; win_deploy.sh deploys it instead of the SDK's stock plugin
+  ```
+  Needs `-msse4.1` and `tools/cross/include-case/` (relative symlinks ObjBase.h, SDKDDKVer.h: xwin's headers are
+  lowercase). Patch 0001 = precise memexport readback (cvar `readback_memexport_precise`, default on).
 - GhidraMCP: reachable from WSL (mirrored networking). Next phase: import `dump/Disc 1/game/Default.xex` and
   `BF.Main.xex` (then BF.Splash, Engine.BuildInfo) with XEXLoaderWV, confirm image md5s/bases above with
   `get_program_info`, then find how the launcher loads the DLL modules (XexLoadImage / XexLoadExecutable imports).
@@ -147,6 +158,7 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
 | BF.Main setjmp 0x83DF2720 / longjmp 0x83DF29F0 | `setjmp_address` / `longjmp_address` in BF.Main's `[[modules]]` | Run 4: `*** STOP: 0x00000000` = exit(1) from luaD_throw (0x838F9F18): Lua's longjmp just returned without the declaration, so a Lua error fell through to panic. Found via the doexit call chain (exit_trace.cpp) |
 | GPU plugin | `GPU_PLUGINS xenos` + default `gpu_plugin = "xenos"` | Run 5: stalled at VdInitializeRingBuffer, no GPU emulation |
 | Toolchain: v0.10.0 -> nightly-20261002 | SDK swap (see Environment) | Run 6-8: null call in job worker sub_8346D590 (12 s) or hang (4 s), nondeterministic: v0.10.0 emitted no fences for lwsync/sync/eieio. Fences alone did NOT fix the null call |
+| GPU plugin: memexport readback | patches/rexglue/0001: snapshot export ranges before the draw, write back only bytes the draw changed | BF3 declares its whole GPU-writable heap F1A9F000 (0x60000, holds the job pool) as a memexport range; stock readback copied the whole range from the GPU copy and rolled back CPU writes (free-list ABA -> double alloc -> jobs run twice -> null calls, hang). With readback off the game waits forever on exported data. Result: title screen "PRESS START TO BEGIN" (2026-10-25) |
 | BF.Main sub_8346D590 (job worker) | `src/bf_main/job_worker.cpp`: faithful C++ port that skips fn == 0 | Run 9: no crash, ran 90 s; skipped 64-127 jobs in one burst at ~11 s, loading screen faded out (new tip), then black window + silent log = likely hang. OPEN: skipped jobs may not be "already finished" (published before fn written?), check who sets job hi bit 0 and who waits on parent+48 |
 | 33 sweep hits (BF.Main 18 incl. 0x838B2CFC, 0x83001C00; all 6 Default; all 9 Engine.BuildInfo) | commented out in manifest (`REMOVED`) | Interior labels inside .pdata functions (likely SEH handler/scope targets; same 0x5BC/0x848-byte CRT functions in all modules). 3 showed as codegen `Unresolved b target`, 0x83001C00 (bdz target in sub_83001B30) only as a compile error `undeclared label loc_83001C00`. find_unregistered.py now skips targets inside .pdata functions |
 
@@ -208,6 +220,8 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
     changed, forces readback_memexport_fast=false): cuts written bytes from 2.1 MB to ~10 KB per 8 readbacks, but the
     plugin's GPU copy of the heap is sometimes OLDER than the last upload (e.g. 0xDDDDDDDD vs 3F001FEF at +0x28), so
     some stale bytes still land: fn==0 still occurs. Needs a GPU-side before/after diff in the plugin itself.
+- STATUS 2026-10-25: boots to the title screen ("PRESS START TO BEGIN") with the patched GPU plugin; no job-system
+  errors. The memcpy-hook workaround (src/gpu_readback_fix.cpp) was removed, superseded by the plugin patch.
 - STATUS 2026-10-24 (end of session 1): boots through launcher -> BF.Main -> Engine.BuildInfo, renders the loading
   screen (tips, LOADING) via D3D12, loading screen fades out at ~13 s, then black + no logs (probable hang in/after the
   job system). Next: find the waiter (dump guest thread states at the hang; see who spins/waits on parent+48 or

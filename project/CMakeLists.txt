@@ -15,7 +15,6 @@ set(BF3_SOURCES
     src/main.cpp
     src/launcher_hooks.cpp
     src/crash_trace.cpp
-    src/gpu_readback_fix.cpp
 )
 
 if(WIN32)
