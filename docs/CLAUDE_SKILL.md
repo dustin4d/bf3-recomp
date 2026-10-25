@@ -236,6 +236,27 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
 - LIVE emulation (BF3_LIVE=1, src/live_emulation.cpp): sign-in state 2, privileges granted, link up. Multiplayer then
   goes GoOnlineLoadingScreen -> "Failed to connect to EA Online" (needs EA Blaze backend). Off by default.
   That popup is also missing glyphs ("ailed to connect to ... nline"): dynamic font glyphs not appearing.
+- Level boot (BF3_LEVEL=<level>[:<layer inclusion>], e.g. MP_Subway or MP_Subway:GameMode=ConquestSmall0):
+  - lua_dump.cpp rewrites "Game.Level Levels/Frontend/Frontend" in Scripts/Game.cfg (initfs chunk, CRLF) in place;
+    padding goes on a comment line (trailing spaces became part of the value and failed the level check).
+  - initfs_Xenon is XOR-obfuscated: key = file[0x128:0x128+257], body = file[0x22C:], byte ^ key[i%257] ^ 0x7B.
+    Scripts/Game/Configure.lua reads commandLine, /local/local.cfg, Game.Level, <level>.cfg.
+  - level_boot.cpp: server backend factory table 0x840DFBA4 (Xenon registers types 2, 3; MP boot asks for 1 ->
+    null call) falls back to 2; BF3_BACKEND=<n> forces one. Level check sub_83845C30 allowed GameMode values:
+    RushLarge0/1 ConquestLarge0/1 ConquestSmall0-3 SquadRush0-3 TeamDeathMatch0-3 SquadDeathMatch0-3 TutorialMP(_S).
+  - Server level state machine: handler sub_833B1500 (ServerStartedMessage 3AD97D0A, ServerInternalLoadLevelMessage
+    11FF6EFC, ServerLevelLoadedMessage 236C395A, ServerUnloadLevelMessage 6E1933E0, ServerLevelUnloadedMessage
+    D3318581, ServerLoadLevelMessageBase F8429A0E, ServerStopMessageBase B455ADA6, ServerLoadGameMessage AB12C7A3;
+    message type hashes are djb2-xor of the class name). Flags: +0x3c internal load, +0x3d unloading, +0x65 unload
+    requested, +0x66 unload after load, +0x70 level. Unload (sub_833AB7E8 -> sub_83839C50) resets the 48 MB level heap
+    0x84041D50 (sub_83013DA8), so allocations still in flight fault at guest 0xC.
+  - The UI scripts call stopServer (app vtable+0x34 sub_82FE4350 -> sub_8339DF30 "Server shutdown") ~7 s after boot;
+    ignored for level boots. CoreQuitMessage (Core 7C813E9E / E913E8AC) sets client+473 -> client update false.
+  - Status: the server loads and keeps MP_Subway; the client stays on the loading screen (doesn't join yet).
+  - BF3_HEAP_TRACE=1: live-allocation tracker for the level heap keyed by guest call chain.
+  - BF3_MAIN_HEAP_MB sizes the level heap (default 48, 160 for level boots).
+- Crash trace also walks the host stack on the runtime's "Unhandled guest access violation" message.
+- scripts/containing_func.py <addr>...: the recompiled function containing a guest address.
 - Contact sheets: `scripts/contact_sheet.sh <first> <count> <out.png> [cols]` (ffmpeg tile of logs/shots).
 - Lua: only config/startup (Scripts/Game/Startup.lua, getTableAsString); BF3_LUA_DUMP=<dir> dumps chunks
   (src/bf_main/lua_dump.cpp hooks luaL_loadbuffer sub_838F7B38). Menus are Scaleform (instance1.pushScreen).

@@ -79,10 +79,14 @@ class FatalTraceSink : public spdlog::sinks::base_sink<spdlog::details::null_mut
  protected:
   void sink_it_(const spdlog::details::log_msg& msg) override {
     std::string_view text(msg.payload.data(), msg.payload.size());
-    if (msg.level < spdlog::level::critical || text.find("[FATAL]") == std::string_view::npos) return;
+    // [FATAL] guest errors, and the runtime's report of an unhandled guest access violation (logged on the faulting
+    // thread from its exception handler, so the walk includes the faulting frames).
+    const bool fatal = msg.level >= spdlog::level::critical && text.find("[FATAL]") != std::string_view::npos;
+    const bool access = text.find("Unhandled guest access violation") != std::string_view::npos;
+    if (!fatal && !access) return;
     if (tracing_) return;  // LogStack logs through the same loggers
     tracing_ = true;
-    REXLOG_ERROR("[crash_trace] host stack at FATAL:");
+    REXLOG_ERROR("[crash_trace] host stack at {}:", fatal ? "FATAL" : "access violation");
     CONTEXT ctx;
     RtlCaptureContext(&ctx);
     LogStack(ctx);

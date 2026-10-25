@@ -39,6 +39,7 @@ if(TARGET bf3_BF_Main)
         src/bf_main/job_trace.cpp
         src/bf_main/lua_dump.cpp
         src/bf_main/ui_screens.cpp
+        src/bf_main/level_boot.cpp
     )
 endif()
 

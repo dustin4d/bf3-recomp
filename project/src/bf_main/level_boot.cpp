@@ -1,0 +1,302 @@
+// Booting straight into a level (BF3_LEVEL, see lua_dump.cpp), plus heap diagnostics.
+//
+// Server backend: sub_8379E870(type r3, ...) creates a server backend through a factory table at 0x840DFBA4 indexed by
+// backend type; sub_836BB1E8 then calls the new object's vtable+12. On Xenon only types 2 and 3 are registered
+// (sub_8379E858 calls in bf3_recomp.158), and the front end creates type 2. Booting straight into an MP level selects
+// type 1 (no factory on Xenon), which called a null pointer. With BF3_LEVEL set, unregistered types fall back to 2.
+//
+// Main heap: the default allocator 0x84041D50 is a fixed 48 MB region (sub_8301AAxx: VirtualAlloc wrapper
+// sub_838D1F28(0, 0x3000000) at 0x8301AAC4, then heap constructor sub_8301A610(heap, vt, type 2, base, size)). An MP
+// level loaded without the front end's teardown overflows it (level partitions alone hold ~13 MB), the allocator's
+// out-of-memory path returns null and sub_83013BA0 faults writing the block header. BF3_MAIN_HEAP_MB=<n> sizes the
+// region (default 48, or 160 when BF3_LEVEL is set); guest virtual memory has the room.
+//
+// Level check: sub_83845C30(r3, level setup r4) returns false unless the setup's layer inclusion names an allowed value
+// for each category (GameMode: RushLarge0/1, ConquestLarge0/1, ConquestSmall0-3, SquadRush0-3, TeamDeathMatch0-3,
+// SquadDeathMatch0-3, TutorialMP, TutorialMP_S); false makes the server start (sub_833AFD20) set the quit flag
+// 0x84091C34 and the main loop exits.
+
+// Compiled into the bf3_BF_Main DLL (see CMakeLists.txt): bf3_pch.h is generated/bf_main/bf3_pch.h.
+#include "bf3_pch.h"
+
+#include <algorithm>
+#include <cstdlib>
+#include <mutex>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+REX_EXTERN(__imp__sub_8379E870);
+REX_EXTERN(__imp__sub_838D1F28);
+REX_EXTERN(__imp__sub_8301A610);
+REX_EXTERN(__imp__sub_8301A290);
+REX_EXTERN(__imp__sub_8301A330);
+REX_EXTERN(__imp__sub_83013BA0);
+REX_EXTERN(__imp__sub_833AFD20);
+REX_EXTERN(__imp__sub_82FE8DC8);
+REX_EXTERN(__imp__sub_831D43E0);
+REX_EXTERN(__imp__sub_831C7240);
+REX_EXTERN(__imp__sub_831C7F98);
+REX_EXTERN(__imp__sub_83027490);
+REX_EXTERN(__imp__sub_83013DA8);
+REX_EXTERN(__imp__sub_83034E28);
+REX_EXTERN(__imp__sub_833B1500);
+REX_EXTERN(__imp__sub_8339DF30);
+
+namespace {
+constexpr uint32_t kFactoryTable = 0x840DFBA4;
+constexpr uint32_t kLocalBackend = 2;
+constexpr uint32_t kMainHeap = 0x84041D50;
+constexpr uint32_t kMainHeapSize = 0x3000000;
+constexpr uint32_t kMainHeapAllocReturn = 0x8301AAC8;
+
+bool LevelBoot() {
+  static const bool on = [] {
+    const char* env = std::getenv("BF3_LEVEL");
+    return env && *env;
+  }();
+  return on;
+}
+
+bool HeapTrace() {
+  static const bool on = [] {
+    const char* env = std::getenv("BF3_HEAP_TRACE");
+    return env && *env == '1';
+  }();
+  return on;
+}
+
+uint32_t MainHeapSize() {
+  static const uint32_t size = [] {
+    const char* env = std::getenv("BF3_MAIN_HEAP_MB");
+    uint32_t mb = env && *env ? uint32_t(std::atoi(env)) : (LevelBoot() ? 160 : 48);
+    return std::clamp<uint32_t>(mb, 48, 512) << 20;
+  }();
+  return size;
+}
+
+uint32_t g_main_heap_base = 0;
+}  // namespace
+
+extern "C" REX_FUNC(sub_8379E870) {
+  static const int forced = [] {
+    const char* env = std::getenv("BF3_BACKEND");
+    return env && *env ? std::atoi(env) : -1;
+  }();
+  if (LevelBoot() && forced >= 0) {
+    REXLOG_INFO("server backend: type {} forced to {}", ctx.r3.u32, forced);
+    ctx.r3.u64 = uint32_t(forced);
+  }
+  const uint32_t type = ctx.r3.u32;
+  if (LevelBoot() && type < 4 && !REX_LOAD_U32(kFactoryTable + type * 4) &&
+      REX_LOAD_U32(kFactoryTable + kLocalBackend * 4)) {
+    REXLOG_WARN("server backend: type {} has no factory, using {}", type, kLocalBackend);
+    ctx.r3.u64 = kLocalBackend;
+  }
+  __imp__sub_8379E870(ctx, base);
+}
+
+// VirtualAlloc wrapper: enlarge the main heap's region.
+extern "C" REX_FUNC(sub_838D1F28) {
+  const bool main_heap = static_cast<uint32_t>(ctx.lr) == kMainHeapAllocReturn && ctx.r4.u32 == kMainHeapSize;
+  if (main_heap) ctx.r4.u64 = MainHeapSize();
+  __imp__sub_838D1F28(ctx, base);
+  if (main_heap) {
+    g_main_heap_base = ctx.r3.u32;
+    REXLOG_INFO("main heap: {} MB at {:08X}", MainHeapSize() >> 20, ctx.r3.u32);
+  }
+}
+
+// Heap constructor (heap r3, vtable r4, type r5, region r6, size r7): the main heap's size follows its region.
+extern "C" REX_FUNC(sub_8301A610) {
+  if (LevelBoot() && ctx.r7.u32 >= (16u << 20)) {
+    REXLOG_INFO("heap ctor: heap {:08X} type {} region {:08X} size {:X}", ctx.r3.u32, ctx.r5.u32, ctx.r6.u32, ctx.r7.u32);
+  }
+  if (g_main_heap_base && ctx.r6.u32 == g_main_heap_base && ctx.r7.u32 == kMainHeapSize) {
+    ctx.r7.u64 = MainHeapSize();
+  }
+  __imp__sub_8301A610(ctx, base);
+}
+
+// Diagnostic (BF3_HEAP_TRACE=1): live-allocation tracker for the default 48 MB heap (0x84041D50, created by
+// sub_8301A610 type 2): sub_8301A290(heap r3, size r4, align r5) allocates, sub_8301A330(heap r3, ptr r4) frees. Each
+// allocation is keyed by its guest call chain (saved LRs at back-chain - 8); whenever live bytes cross another 4 MB,
+// the biggest holders are logged.
+
+namespace {
+struct LiveAlloc {
+  uint32_t size;
+  uint64_t key;
+};
+std::mutex g_live_mutex;
+std::unordered_map<uint32_t, LiveAlloc> g_live;
+std::unordered_map<uint64_t, uint64_t> g_live_by_key;
+uint64_t g_live_bytes = 0, g_live_logged = 0;
+
+uint64_t ChainKey(PPCContext& ctx, uint8_t* base) {
+  uint32_t b = 0, c = 0, sp = ctx.r1.u32;
+  for (int depth = 0; depth < 3 && sp >= 0x40000000 && sp < 0x80000000; ++depth) {
+    uint32_t prev = REX_LOAD_U32(sp);
+    if (prev <= sp || prev - sp > 0x10000) break;
+    uint32_t ret = REX_LOAD_U32(prev - 8);
+    if (depth == 1) b = ret;
+    if (depth == 2) c = ret;
+    sp = prev;
+  }
+  return (uint64_t(b) << 32) | c;
+}
+
+void LogTop() {
+  std::vector<std::pair<uint64_t, uint64_t>> top(g_live_by_key.begin(), g_live_by_key.end());
+  std::sort(top.begin(), top.end(), [](auto& x, auto& y) { return x.second > y.second; });
+  REXLOG_INFO("heap live: {} KB in {} blocks", g_live_bytes >> 10, g_live.size());
+  for (size_t i = 0; i < top.size() && i < 10; ++i) {
+    REXLOG_INFO("heap live:   {:6} KB  callers {:08X} {:08X}", top[i].second >> 10, uint32_t(top[i].first >> 32),
+                uint32_t(top[i].first));
+  }
+}
+}  // namespace
+
+extern "C" REX_FUNC(sub_8301A290) {
+  if (!HeapTrace() || ctx.r3.u32 != kMainHeap) return __imp__sub_8301A290(ctx, base);
+  const uint32_t size = ctx.r4.u32;
+  const uint64_t key = ChainKey(ctx, base);
+  __imp__sub_8301A290(ctx, base);
+  const uint32_t ptr = ctx.r3.u32;
+  std::lock_guard lock(g_live_mutex);
+  if (!ptr) {
+    REXLOG_WARN("heap: alloc {:X} returned null", size);
+    LogTop();
+    return;
+  }
+  g_live[ptr] = {size, key};
+  g_live_by_key[key] += size;
+  g_live_bytes += size;
+  if (g_live_bytes >= g_live_logged + (4u << 20)) {
+    g_live_logged = g_live_bytes;
+    LogTop();
+  }
+}
+
+extern "C" REX_FUNC(sub_8301A330) {
+  if (HeapTrace() && ctx.r3.u32 == kMainHeap && ctx.r4.u32) {
+    std::lock_guard lock(g_live_mutex);
+    if (auto it = g_live.find(ctx.r4.u32); it != g_live.end()) {
+      g_live_by_key[it->second.key] -= it->second.size;
+      g_live_bytes -= it->second.size;
+      g_live.erase(it);
+      if (g_live_logged > g_live_bytes + (4u << 20)) g_live_logged = g_live_bytes;
+    }
+  }
+  __imp__sub_8301A330(ctx, base);
+}
+
+// Diagnostic (BF3_HEAP_TRACE=1): sub_83013BA0(allocator r3, size r4, align r5) writes a block header unless the
+// allocator's flags (+4) bit 0 is set; log each allocator taking that path, and null results.
+extern "C" REX_FUNC(sub_83013BA0) {
+  if (!HeapTrace()) return __imp__sub_83013BA0(ctx, base);
+  const uint32_t alloc = ctx.r3.u32, size = ctx.r4.u32;
+  const uint32_t lr = static_cast<uint32_t>(ctx.lr);
+  if (!(REX_LOAD_U32(alloc + 4) & 1)) {
+    static std::mutex m;
+    static std::vector<uint32_t> seen;
+    std::lock_guard lock(m);
+    if (std::find(seen.begin(), seen.end(), alloc) == seen.end()) {
+      seen.push_back(alloc);
+      uint32_t vt = REX_LOAD_U32(alloc);
+      REXLOG_INFO("header alloc: allocator {:08X} vt {:08X} alloc fn {:08X} (first size {:X} from {:08X})", alloc, vt,
+                  REX_LOAD_U32(vt + 4), size, lr);
+    }
+  }
+  __imp__sub_83013BA0(ctx, base);
+}
+
+// Server start (see the level check above): log when it raises the quit flag.
+extern "C" REX_FUNC(sub_833AFD20) {
+  const uint32_t lr = static_cast<uint32_t>(ctx.lr);
+  __imp__sub_833AFD20(ctx, base);
+  if (LevelBoot()) REXLOG_INFO("server start from {:08X}: quit flag {}", lr, REX_LOAD_U32(0x84091C34));
+}
+
+// Main app object (sub_82FE9E18's loop calls its vtable+16 each frame until it returns false).
+extern "C" REX_FUNC(sub_82FE8DC8) {
+  __imp__sub_82FE8DC8(ctx, base);
+  uint32_t app = ctx.r3.u32, vt = app ? REX_LOAD_U32(app) : 0;
+  if (LevelBoot()) REXLOG_INFO("app {:08X} vtable {:08X} update {:08X}", app, vt, vt ? REX_LOAD_U32(vt + 16) : 0);
+}
+
+extern "C" REX_FUNC(sub_83013DA8) {
+  if (LevelBoot()) REXLOG_WARN("memory shutdown (sub_83013DA8) from {:08X}", uint32_t(ctx.lr));
+  __imp__sub_83013DA8(ctx, base);
+}
+extern "C" REX_FUNC(sub_83034E28) {
+  if (LevelBoot()) REXLOG_WARN("main loop ended (sub_83034E28) from {:08X}", uint32_t(ctx.lr));
+  __imp__sub_83034E28(ctx, base);
+}
+
+// Client message handler (client r3, message r4: +4 category hash, +8 type hash). CoreQuitMessage (category "Core"
+// 0x7C813E9E, type 0xE913E8AC) sets client+473, which makes the client update return false and the game exit.
+extern "C" REX_FUNC(sub_831D43E0) {
+  const uint32_t msg = ctx.r4.u32;
+  if (LevelBoot() && REX_LOAD_U32(msg + 4) == 0x7C813E9E && REX_LOAD_U32(msg + 8) == 0xE913E8AC) {
+    REXLOG_WARN("client: CoreQuitMessage ignored (msg {:08X}, lr {:08X})", msg, uint32_t(ctx.lr));
+    return;
+  }
+  __imp__sub_831D43E0(ctx, base);
+}
+
+// Frame update pieces (sub_82FE41F0): any false return ends the main loop.
+extern "C" REX_FUNC(sub_831C7240) {
+  __imp__sub_831C7240(ctx, base);
+  static int n = 0;
+  if (LevelBoot() && !(ctx.r3.u32 & 0xFF) && n++ < 3) REXLOG_WARN("frame: sub_831C7240 returned false");
+}
+extern "C" REX_FUNC(sub_831C7F98) {
+  const uint32_t client = ctx.r3.u32;
+  __imp__sub_831C7F98(ctx, base);
+  static int n = 0;
+  if (LevelBoot() && !(ctx.r3.u32 & 0xFF) && n++ < 3) REXLOG_WARN("frame: client {:08X} update returned false", client);
+}
+extern "C" REX_FUNC(sub_83027490) {
+  __imp__sub_83027490(ctx, base);
+  static bool logged = false;
+  if (LevelBoot() && !logged && ctx.r3.u32) {
+    logged = true;
+    uint32_t vt = REX_LOAD_U32(ctx.r3.u32);
+    REXLOG_INFO("frame: platform {:08X} vt {:08X} update {:08X}", ctx.r3.u32, vt, REX_LOAD_U32(vt + 20));
+  }
+}
+
+// Server level-load state machine message handler (server r3, message r4: +8 type hash; load-level name at +0x28).
+// Server flags: +0x3c abort, +0x3d unloading, +0x65 unload requested, +0x66 unload after load, +0x70 current level.
+extern "C" REX_FUNC(sub_833B1500) {
+  const uint32_t server = ctx.r3.u32, msg = ctx.r4.u32, type = REX_LOAD_U32(msg + 8);
+  auto flags = [&] {
+    return fmt::format("3c={} 3d={} 65={} 66={} level={:08X}", REX_LOAD_U8(server + 0x3c), REX_LOAD_U8(server + 0x3d),
+                       REX_LOAD_U8(server + 0x65), REX_LOAD_U8(server + 0x66), REX_LOAD_U32(server + 0x70));
+  };
+  std::string before = flags(), name;
+  if (type == 0xF8429A0E) {
+    uint32_t p = REX_LOAD_U32(msg + 0x28);
+    if (p) name = reinterpret_cast<const char*>(REX_RAW_ADDR(p));
+  }
+  __imp__sub_833B1500(ctx, base);
+  // ServerInternalLoadLevelMessage (the startup Game.Level load) marks the load internal (+0x3c), and once loaded the
+  // server releases and unloads it again (sub_833AE488). For a level boot, run it as a normal load instead.
+  if (LevelBoot() && type == 0x11FF6EFC && REX_LOAD_U8(server + 0x3c)) {
+    REX_STORE_U8(server + 0x3c, 0);
+    REXLOG_INFO("server: startup level load runs as a normal load");
+  }
+  if (LevelBoot()) REXLOG_INFO("server msg {:08X} '{}': {} -> {}", type, name, before, flags());
+}
+
+// Server stop ("Server shutdown"): marks the level for unloading after it loads (+0x66). Reached from the app's
+// stopServer (sub_82FE4350, app vtable+0x34 and a script binding at 0x82F466D8), which the UI scripts call during
+// startup as if coming from the front end. A level boot keeps its server.
+extern "C" REX_FUNC(sub_8339DF30) {
+  if (LevelBoot()) {
+    REXLOG_WARN("server stop from {:08X} ignored (level boot)", uint32_t(ctx.lr));
+    return;
+  }
+  __imp__sub_8339DF30(ctx, base);
+}
