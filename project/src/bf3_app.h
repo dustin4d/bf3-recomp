@@ -6,6 +6,7 @@
 
 #include <rex/filesystem.h>
 
+#include "kernel_fixes.h"
 #include "live_emulation.h"
 #include "pc_settings.h"
 #include "pad_inject.h"
@@ -50,6 +51,7 @@ class Bf3App : public rex::ReXApp {
   void OnPostSetup() override {
     bf3::InstallPadInject();
     bf3::InstallLiveEmulation();
+    bf3::InstallKernelFixes();
   }
   // void OnLoadXexImage(std::string& xex_image) override {}
   // void OnPostLoadXexImage() override {}

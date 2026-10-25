@@ -205,6 +205,9 @@ longjmp_address = 0x83DF29F0  # (jmp_buf, val), val 0 -> 1
 0x83A8D740 = {}  # ~0x20 bytes; from 0x82EC13A8
 0x83B16868 = {}  # ~0x14 bytes; from 0x82ECADA0, 0x82ECADD8
 0x83B26220 = {}  # ~0x28 bytes; from 0x83B26454
+0x83B26248 = { size = 0x28 }  # packed vtable-forwarding thunk; reached via a runtime dispatch table (sub_83B262E8)
+0x83B26270 = { size = 0x18 }  # packed thunk, as above
+0x83B26288 = { size = 0x18 }  # packed thunk, as above (unregistered call after a level switch)
 0x83B262A0 = {}  # ~0x18 bytes; from 0x83B26414
 0x83B262B8 = {}  # ~0x18 bytes; from 0x83B2640C
 0x83B262D0 = {}  # ~0x18 bytes; from 0x83B26410

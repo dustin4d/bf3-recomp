@@ -1,8 +1,10 @@
 // Lua chunk hooks.
 // - Research aid: save every Lua chunk BF3 loads (UI flow, options, ...) when BF3_LUA_DUMP=<host directory> is set.
-// - BF3_LEVEL=<level>[:<layer inclusion>] boots straight into a level instead of the front end, by rewriting the
-//   "Game.Level Levels/Frontend/Frontend" setting in Scripts/Game.cfg (a Lua chunk from initfs) in place, e.g.
-//   BF3_LEVEL=MP_Subway:GameMode=TeamDeathMatch0. Default layer inclusion: GameMode=TeamDeathMatch0.
+// - BF3_LEVEL=<level>[:<layer inclusion>] with BF3_LEVEL_DIRECT=1 boots straight into a level instead of the front
+//   end, by rewriting the "Game.Level Levels/Frontend/Frontend" setting in Scripts/Game.cfg (a Lua chunk from initfs)
+//   in place, e.g. BF3_LEVEL=MP_Subway:GameMode=TeamDeathMatch0. The server loads the level, but the client can't
+//   connect while the server is busy loading; without BF3_LEVEL_DIRECT, level_boot.cpp switches levels from the
+//   front end instead.
 // sub_838F7B38 is Frostbite's luaL_loadbuffer(L r3, buf r4, size r5, chunkname r6) (see docs/CLAUDE_SKILL.md, the
 // tableToString caller 0x830501F8). Chunks are written as <index>_<sanitized name>.lua (source or bytecode as given).
 
@@ -14,6 +16,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <string_view>
 
 REX_EXTERN(__imp__sub_838F7B38);
 
@@ -31,9 +34,34 @@ std::atomic<int> g_chunks{0};
 constexpr char kFrontendBlock[] =
     "Game.Level Levels/Frontend/Frontend\r\n#Game.DefaultLayerInclusion GameMode=ConquestLarge\r\n#Level.Start E3_Demo";
 
+// Two commented-out lines in Game.cfg that give room for extra settings on level boots.
+constexpr char kServerIpBlock[] =
+    "#Client.ServerIp                   10.20.102.99\r\n#Client.SecondaryServerIp          10.20.102.63";
+
+// The commented-out timeout settings in Game.cfg (enabled on level boots: the client gives up on a server that is
+// busy loading a large level).
+constexpr char kTimeoutBlock[] =
+    "//Timeout values\r\n//Client.LoadingTimeOut 99999\r\n//Client.LoadedTimeOut  99999\r\n"
+    "//Client.IngameTimeOut  99999\r\n//Server.IngameTimeOut  99999\r\n//Server.LoadingTimeOut 99999";
+
+// Replaces a block of Game.cfg in place with settings lines; padding goes on a trailing comment line.
+bool ReplaceBlock(uint8_t* text, std::string_view chunk, std::string_view block, std::string lines) {
+  size_t at = chunk.find(block);
+  if (at == std::string_view::npos) return false;
+  lines += "\r\n#";
+  if (lines.size() > block.size()) {
+    REXLOG_WARN("cfg override: '{}' too long for its block", lines);
+    return false;
+  }
+  lines.resize(block.size(), ' ');
+  std::memcpy(text + at, lines.data(), lines.size());
+  return true;
+}
+
 void OverrideLevel(uint8_t* text, uint32_t size) {
   static const char* env = std::getenv("BF3_LEVEL");
-  if (!env || !*env) return;
+  static const char* direct = std::getenv("BF3_LEVEL_DIRECT");
+  if (!env || !*env || !direct || *direct != '1') return;
   std::string chunk(reinterpret_cast<const char*>(text), size);
   size_t at = chunk.find(kFrontendBlock);
   if (at == std::string::npos) return;
@@ -43,15 +71,22 @@ void OverrideLevel(uint8_t* text, uint32_t size) {
     level.resize(colon);
   }
   if (level.find('/') == std::string::npos) level = "Levels/" + level + "/" + level;
-  std::string block = "Game.Level " + level + "\r\nGame.DefaultLayerInclusion " + layers;
-  const size_t room = sizeof(kFrontendBlock) - 1;
-  block += "\r\n#";  // the padding goes on a comment line; trailing spaces would become part of the value
-  if (block.size() > room) {
-    REXLOG_WARN("level override: '{}' too long for Game.cfg", block);
+  if (!ReplaceBlock(text, chunk, kFrontendBlock,
+                    "Game.Level " + level + "\r\nGame.DefaultLayerInclusion " + layers)) {
     return;
   }
-  block.resize(room, ' ');
-  std::memcpy(text + at, block.data(), room);
+  // The online backend the front end ends up with (BF3_ONLINE_BACKEND overrides; "-" leaves the data's own).
+  const char* backend = std::getenv("BF3_ONLINE_BACKEND");
+  std::string b = backend && *backend ? backend : "Backend_Peer";
+  // The server can't accept the client while it loads a large level, so give the connection time.
+  std::string extra = "Network.ConnectTimeout 180";
+  if (b != "-") extra = "Online.Backend " + b + "\r\n" + extra;
+  if (ReplaceBlock(text, chunk, kServerIpBlock, extra)) REXLOG_INFO("level override: {}", extra);
+  if (ReplaceBlock(text, chunk, kTimeoutBlock,
+                   "Client.LoadingTimeOut 99999\r\nClient.LoadedTimeOut 99999\r\nClient.IngameTimeOut 99999\r\n"
+                   "Server.IngameTimeOut 99999\r\nServer.LoadingTimeOut 99999")) {
+    REXLOG_INFO("level override: loading/ingame timeouts 99999");
+  }
   REXLOG_INFO("level override: Game.Level {} ({})", level, layers);
 }
 

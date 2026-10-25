@@ -66,7 +66,22 @@ inline LONG CALLBACK GuestNullFaultHandler(EXCEPTION_POINTERS* info) {
     return EXCEPTION_CONTINUE_SEARCH;
   }
   uintptr_t fault = rec->ExceptionInformation[1];
-  if (fault < kGuestBase || fault >= kGuestBase + kNullWindow) return EXCEPTION_CONTINUE_SEARCH;
+  if (fault < kGuestBase || fault >= kGuestBase + kNullWindow) {
+    // Faults inside the runtime itself (not guest memory accesses it handles): log where they come from.
+    static const HMODULE runtime = GetModuleHandleW(L"rexruntime.dll");
+    static std::atomic<int> reports{0};
+    HMODULE at = nullptr;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       reinterpret_cast<LPCWSTR>(rec->ExceptionAddress), &at);
+    if (runtime && at == runtime && (fault < kGuestBase || fault >= kGuestBase + 0x200000000ull) &&
+        reports.fetch_add(1) < 3) {
+      REXLOG_ERROR("[crash_trace] runtime fault: {} 0x{:X} at {}", rec->ExceptionInformation[0] ? "write" : "read",
+                   fault, FrameName(reinterpret_cast<DWORD64>(rec->ExceptionAddress)));
+      LogStack(*info->ContextRecord);
+      rex::FlushLogging();
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+  }
   REXLOG_ERROR("[crash_trace] guest null fault: {} guest 0x{:08X} at {}",
                rec->ExceptionInformation[0] ? "write" : "read", fault - kGuestBase,
                FrameName(reinterpret_cast<DWORD64>(rec->ExceptionAddress)));

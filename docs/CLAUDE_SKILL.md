@@ -237,6 +237,21 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
   goes GoOnlineLoadingScreen -> "Failed to connect to EA Online" (needs EA Blaze backend). Off by default.
   That popup is also missing glyphs ("ailed to connect to ... nline"): dynamic font glyphs not appearing.
 - Level boot (BF3_LEVEL=<level>[:<layer inclusion>], e.g. MP_Subway or MP_Subway:GameMode=ConquestSmall0):
+  - Default: boot the front end, then switch (level_boot.cpp, hook of the level manager update sub_833AF040): 3 s after
+    CoreEnteredIngameMessage it feeds sub_833B1500 a ServerLoadLevelMessageBase built in guest memory (allocator
+    0x84042270): +8 F8429A0E, +0x28 LevelSetup {char* name, options array (count at -4) of {char* category, char*
+    value}, u32, u32 array}, +0x3d 0. The server unloads the front end and loads the level; the connected client
+    follows (ClientConnectionLoadLevel -> ClientLevelLoaded).
+  - BF3_LEVEL_DIRECT=1: the older route below (server loads the level at startup). The client can't join: its
+    connection drops after ~7 s while the server is busy loading (not one of the cfg timeouts), then it never retries.
+    It sets Online.Backend Backend_Peer and the Client/Server *TimeOut settings through spare Game.cfg comment lines.
+  - BackendType values: Lan 0, Blaze 1, Peer 2, Local 3 (Online.Backend Backend_Peer -> type 2 without fallback).
+  - BF3_MSG_TRACE=1 logs server/client messages; scripts/msg_names.py <log> names the hashes.
+  - kernel_fixes.cpp: stale cached event handles in guest dispatcher headers (ReXGlue stashes 'REX\0' + handle in
+    wait_list_flink/blink; reused memory keeps the old handle, which may now name another object type ->
+    XEvent::Set+0x8 crash in rexruntime). Validated before KeSetEvent/KeResetEvent and RtlEnter/LeaveCriticalSection
+    (RtlLeave calls xeKeSetEvent inside the runtime), cleared after RtlInitializeCriticalSection(AndSpinCount).
+  - Packed vtable thunks 0x83B26248/70/88 (reached via a runtime dispatch table in sub_83B262E8) added to the manifest.
   - lua_dump.cpp rewrites "Game.Level Levels/Frontend/Frontend" in Scripts/Game.cfg (initfs chunk, CRLF) in place;
     padding goes on a comment line (trailing spaces became part of the value and failed the level check).
   - initfs_Xenon is XOR-obfuscated: key = file[0x128:0x128+257], body = file[0x22C:], byte ^ key[i%257] ^ 0x7B.
@@ -252,7 +267,8 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
     0x84041D50 (sub_83013DA8), so allocations still in flight fault at guest 0xC.
   - The UI scripts call stopServer (app vtable+0x34 sub_82FE4350 -> sub_8339DF30 "Server shutdown") ~7 s after boot;
     ignored for level boots. CoreQuitMessage (Core 7C813E9E / E913E8AC) sets client+473 -> client update false.
-  - Status: the server loads and keeps MP_Subway; the client stays on the loading screen (doesn't join yet).
+  - Status 2026-10-26: the switch reaches MP_Subway's spawn UI (SpawnScreenTicketCounterTDMScreen, SpawnButtonConsoleScreen,
+    SpawnScreen, ChatLogScreen, TabListenerScreen pushed ~20 s after the switch) but the screen stays black.
   - BF3_HEAP_TRACE=1: live-allocation tracker for the level heap keyed by guest call chain.
   - BF3_MAIN_HEAP_MB sizes the level heap (default 48, 160 for level boots).
 - Crash trace also walks the host stack on the runtime's "Unhandled guest access violation" message.

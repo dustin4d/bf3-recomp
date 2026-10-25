@@ -19,6 +19,7 @@ set(BF3_SOURCES
     src/pc_input.cpp
     src/ui_state.cpp
     src/live_emulation.cpp
+    src/kernel_fixes.cpp
     src/pc_settings.cpp
 )
 

@@ -20,6 +20,9 @@
 #include "bf3_pch.h"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cstring>
 #include <cstdlib>
 #include <mutex>
 #include <string>
@@ -42,6 +45,8 @@ REX_EXTERN(__imp__sub_83013DA8);
 REX_EXTERN(__imp__sub_83034E28);
 REX_EXTERN(__imp__sub_833B1500);
 REX_EXTERN(__imp__sub_8339DF30);
+REX_EXTERN(__imp__sub_833B0750);
+REX_EXTERN(__imp__sub_833AF040);
 
 namespace {
 constexpr uint32_t kFactoryTable = 0x840DFBA4;
@@ -54,6 +59,14 @@ bool LevelBoot() {
   static const bool on = [] {
     const char* env = std::getenv("BF3_LEVEL");
     return env && *env;
+  }();
+  return on;
+}
+
+bool MsgTrace() {
+  static const bool on = [] {
+    const char* env = std::getenv("BF3_MSG_TRACE");
+    return env && *env == '1';
   }();
   return on;
 }
@@ -76,6 +89,12 @@ uint32_t MainHeapSize() {
 }
 
 uint32_t g_main_heap_base = 0;
+std::atomic<uint64_t> g_entered_ingame_ms{0};
+
+uint64_t NowMs() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
 }  // namespace
 
 extern "C" REX_FUNC(sub_8379E870) {
@@ -238,6 +257,10 @@ extern "C" REX_FUNC(sub_83034E28) {
 // 0x7C813E9E, type 0xE913E8AC) sets client+473, which makes the client update return false and the game exit.
 extern "C" REX_FUNC(sub_831D43E0) {
   const uint32_t msg = ctx.r4.u32;
+  if (MsgTrace()) REXLOG_INFO("client msg {:08X}/{:08X}", REX_LOAD_U32(msg + 4), REX_LOAD_U32(msg + 8));
+  if (REX_LOAD_U32(msg + 4) == 0x7C813E9E && REX_LOAD_U32(msg + 8) == 0x68AFE2B5) {  // CoreEnteredIngameMessage
+    g_entered_ingame_ms = NowMs();
+  }
   if (LevelBoot() && REX_LOAD_U32(msg + 4) == 0x7C813E9E && REX_LOAD_U32(msg + 8) == 0xE913E8AC) {
     REXLOG_WARN("client: CoreQuitMessage ignored (msg {:08X}, lr {:08X})", msg, uint32_t(ctx.lr));
     return;
@@ -281,13 +304,18 @@ extern "C" REX_FUNC(sub_833B1500) {
     if (p) name = reinterpret_cast<const char*>(REX_RAW_ADDR(p));
   }
   __imp__sub_833B1500(ctx, base);
-  // ServerInternalLoadLevelMessage (the startup Game.Level load) marks the load internal (+0x3c), and once loaded the
-  // server releases and unloads it again (sub_833AE488). For a level boot, run it as a normal load instead.
-  if (LevelBoot() && type == 0x11FF6EFC && REX_LOAD_U8(server + 0x3c)) {
+  // ServerInternalLoadLevelMessage (the startup Game.Level load) marks the load internal (+0x3c); the client's join
+  // normally clears it, otherwise the server releases and unloads the level once loaded (sub_833AE488).
+  // BF3_NORMAL_LOAD=1 clears it right away (keeps the level without a client).
+  static const bool normal_load = [] {
+    const char* env = std::getenv("BF3_NORMAL_LOAD");
+    return env && *env == '1';
+  }();
+  if (LevelBoot() && normal_load && type == 0x11FF6EFC && REX_LOAD_U8(server + 0x3c)) {
     REX_STORE_U8(server + 0x3c, 0);
     REXLOG_INFO("server: startup level load runs as a normal load");
   }
-  if (LevelBoot()) REXLOG_INFO("server msg {:08X} '{}': {} -> {}", type, name, before, flags());
+  if (LevelBoot() || MsgTrace()) REXLOG_INFO("server msg {:08X} '{}': {} -> {}", type, name, before, flags());
 }
 
 // Server stop ("Server shutdown"): marks the level for unloading after it loads (+0x66). Reached from the app's
@@ -299,4 +327,88 @@ extern "C" REX_FUNC(sub_8339DF30) {
     return;
   }
   __imp__sub_8339DF30(ctx, base);
+}
+
+// Server construction (sub_833B0750(r3, spawn info r4, r5)). Spawn info bytes: +0x10/+0x11 select the Local backend
+// (type 3), +0x14 a networked multiplayer server (backend OnlineSettings+0x10, type 1: no factory on Xenon), otherwise
+// OnlineSettings+0xC (type 2) as the front end uses. BF3_LOCAL_SERVER=1 (default for level boots) clears +0x14 so the
+// level runs on the same in-process server as the front end.
+extern "C" REX_FUNC(sub_833B0750) {
+  static const bool local = [] {
+    const char* env = std::getenv("BF3_LOCAL_SERVER");
+    return env && *env ? *env == '1' : LevelBoot();
+  }();
+  const uint32_t info = ctx.r4.u32;
+  if (LevelBoot()) {
+    REXLOG_INFO("server create: info +10 {} +11 {} +12 {} +14 {}", REX_LOAD_U8(info + 0x10), REX_LOAD_U8(info + 0x11),
+                REX_LOAD_U8(info + 0x12), REX_LOAD_U8(info + 0x14));
+    if (local) REX_STORE_U8(info + 0x14, 0);
+  }
+  __imp__sub_833B0750(ctx, base);
+}
+
+// Level switch from the front end (BF3_LEVEL without BF3_LEVEL_DIRECT): once the client has entered the front end
+// level (CoreEnteredIngameMessage) and the server is idle, hand the server's level manager a ServerLoadLevelMessage
+// (type F8429A0E) naming the level, as the campaign menu's level change does. The manager then unloads the front end
+// and loads the level, and the connected client follows.
+//
+// Message: +8 type hash, +0x28 LevelSetup {+0 char* name, +4 inclusion options (array, count at -4) of {char*
+// category, char* value}, +8 u32, +12 u32 array}, +0x3d bool. Strings are plain char*; the manager copies all of it.
+// Level manager (sub_833AF040's r3, sub_833B1500's r3): +0x1c current LevelSetup, +0x3d unloading, +0x65 unload
+// requested, +0x70 loaded level.
+extern "C" REX_FUNC(sub_833AF040) {
+  static bool done = false;
+  static const bool direct = [] {
+    const char* env = std::getenv("BF3_LEVEL_DIRECT");
+    return env && *env == '1';
+  }();
+  const uint32_t manager = ctx.r3.u32;
+  const uint64_t entered = g_entered_ingame_ms.load();
+  if (LevelBoot() && !direct && !done && entered && NowMs() - entered > 3000 && REX_LOAD_U32(manager + 0x70) &&
+      !REX_LOAD_U8(manager + 0x3d) && !REX_LOAD_U8(manager + 0x65)) {
+    done = true;
+    std::string level = std::getenv("BF3_LEVEL"), layers = "GameMode=TeamDeathMatch0";
+    if (size_t colon = level.find(':'); colon != std::string::npos) {
+      layers = level.substr(colon + 1);
+      level.resize(colon);
+    }
+    if (level.find('/') == std::string::npos) level = "Levels/" + level + "/" + level;
+    std::string category = "GameMode", value = layers;
+    if (size_t eq = layers.find('='); eq != std::string::npos) {
+      category = layers.substr(0, eq);
+      value = layers.substr(eq + 1);
+    }
+    // Guest memory for the message, from the allocator the server uses for messages.
+    PPCContext saved = ctx;
+    ctx.r3.u64 = 0x84042270;
+    ctx.r4.u64 = 0x200;
+    ctx.r5.u64 = 16;
+    sub_83013BA0(ctx, base);
+    const uint32_t msg = ctx.r3.u32;
+    ctx = saved;
+    if (!msg) {
+      REXLOG_WARN("level switch: no memory for the message");
+    } else {
+      std::memset(REX_RAW_ADDR(msg), 0, 0x200);
+      auto put = [&](uint32_t at, const std::string& text) {
+        std::memcpy(REX_RAW_ADDR(msg + at), text.c_str(), std::min<size_t>(text.size() + 1, 0x7F));
+        return msg + at;
+      };
+      REX_STORE_U32(msg + 0x08, 0xF8429A0E);
+      REX_STORE_U32(msg + 0x28, put(0x100, level));
+      REX_STORE_U32(msg + 0x50, 1);  // option count
+      REX_STORE_U32(msg + 0x2C, msg + 0x54);
+      REX_STORE_U32(msg + 0x54, put(0x180, category));
+      REX_STORE_U32(msg + 0x58, put(0x1A0, value));
+      REX_STORE_U32(msg + 0x30, REX_LOAD_U32(manager + 0x1c + 8));
+      REX_STORE_U32(msg + 0x60, 0);  // u32 array count
+      REX_STORE_U32(msg + 0x34, msg + 0x64);
+      REXLOG_INFO("level switch: loading {} ({}={}) from the front end", level, category, value);
+      ctx.r3.u64 = manager;
+      ctx.r4.u64 = msg;
+      sub_833B1500(ctx, base);
+      ctx = saved;
+    }
+  }
+  __imp__sub_833AF040(ctx, base);
 }
