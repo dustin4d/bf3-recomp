@@ -35,6 +35,7 @@
 #include <vector>
 
 #include "dev_shared.h"
+#include "dev_watch.h"
 #include "../pad_inject.h"
 #include "../pc_keys.h"
 #include "../pc_mouse.h"
@@ -195,7 +196,7 @@ Reply GameRequest(const std::string& line) {
 
 // ---- derived state -----------------------------------------------------------------------------------------------
 
-std::vector<std::string> SplitScreens(const std::string& list) {
+std::vector<std::string> SplitList(const std::string& list) {  // ';' separated
   std::vector<std::string> out;
   std::stringstream ss(list);
   for (std::string s; std::getline(ss, s, ';');) {
@@ -205,19 +206,23 @@ std::vector<std::string> SplitScreens(const std::string& list) {
 }
 
 // Where the game is, for tests to wait on: boot, main_menu, menu (other front end screens), loading, spawn_screen,
-// playing (a local soldier with the HUD up), ingame_menu (a menu over the level).
+// playing (a local soldier with the HUD up), dead (killed, until the spawn screen), ingame_menu (a menu over the level).
 std::string Phase(const Snapshot* s, const std::string& top, const std::string& live) {
   if (!s || live.empty()) return "boot";
   if (live.find("Loading") != std::string::npos) return "loading";
   if (live.find("SpawnScreen") != std::string::npos) return "spawn_screen";
+  if (live.find("KillScreen") != std::string::npos) return "dead";
   const bool hud = live.find("HudScreen") != std::string::npos;
+  if (hud && !s->soldier && s->level_loaded && std::string_view(s->level).find("FrontEnd") == std::string_view::npos) {
+    return "dead";  // between the death and the kill screen
+  }
   if (hud && s->soldier) {
     for (const char* menu : {"Menu", "Popup", "Options", "BackScreen", "EndOfRound"}) {
       if (live.find(menu) != std::string::npos) return "ingame_menu";
     }
     return "playing";
   }
-  if (top == "MainMenuScreen") return "main_menu";
+  if (top == "MainMenuScreen") return s->frontend_ready ? "main_menu" : "menu";
   return hud ? "ingame_menu" : "menu";
 }
 
@@ -256,19 +261,22 @@ Obj Perf(double window_s) {
 Reply Status() {
   Snapshot s{};
   const bool have = GetSnapshot(s);
-  const std::string top = ui_state::TopScreen(), live = ui_state::LiveScreens();
+  const std::string top = ui_state::TopScreen(), live = have ? s.screens : "";
   Reply r;
   r.obj.Str("phase", Phase(have ? &s : nullptr, top, live));
-  r.obj.Child("ui", Obj().Str("top", top).Strings("screens", SplitScreens(live)));
+  r.obj.Child("ui", Obj().Str("top", top).Strings("screens", SplitList(live)));
   r.obj.Child("input", Obj().Bool("focused", pc_mouse::GameFocused()).Bool("menu_mode", pc_mouse::MenuMode()));
   if (!have) return r;
   r.obj.Int("frame", int64_t(s.frame)).Int("ticks", int64_t(s.ticks)).Number("uptime_s", s.uptime_s);
   r.obj.Child("level", Obj().Str("name", s.level)
                            .Bool("loaded", s.level_loaded)
                            .Bool("unloading", s.level_unloading)
-                           .Number("ingame_s", s.ingame_s));
+                           .Number("ingame_s", s.ingame_s)
+                           .Bool("frontend_ready", s.frontend_ready));
   Obj player;
-  player.Address("soldier", s.soldier).Str("team", TeamName(s.team)).Address("server_player", s.server_player);
+  player.Address("soldier", s.soldier).Str("team", TeamName(s.team)).Address("server_player", s.server_player)
+      .Address("server_soldier", s.server_soldier);
+  if (s.server_soldier) player.Number("server_health", s.server_health).Vec("server_pos", s.server_pos, 3);
   if (s.soldier) {
     float yaw, pitch;
     ViewAngles(s.transform, 1.0f, yaw, pitch);
@@ -277,6 +285,12 @@ Reply Status() {
     player.Bool("on_foot", s.on_foot)
         .Vec("pos", s.transform + 12, 3)
         .Number("heading", yaw)
+        .Number("health", s.health)
+        .Str("weapon", s.weapon)
+        .Strings("attachments", SplitList(s.attachments))
+        .Int("ammo_mag", s.ammo_mag)
+        .Int("ammo_reserve", s.ammo_reserve)
+        .Int("kit", s.kit)
         .Number("aim_yaw", s.aim_yaw)
         .Number("aim_pitch", s.aim_pitch)
         .Vec("velocity", s.velocity, 3)
@@ -284,6 +298,13 @@ Reply Status() {
         .Number("transform_age_s", s.transform_age_s);
   }
   r.obj.Child("player", player);
+  if (s.preround_entity) {
+    const char* state = !s.round_started ? "waiting_for_players" : s.round_countdown > 0 ? "countdown" : "running";
+    r.obj.Child("round", Obj().Str("state", state)
+                             .Number("countdown_s", std::max(0.0f, s.round_countdown))
+                             .Int("players_needed", s.round_players_needed)
+                             .Address("preround_entity", s.preround_entity));
+  }
   float cyaw, cpitch;
   ViewAngles(s.camera, -1.0f, cyaw, cpitch);
   r.obj.Child("camera", Obj().Vec("pos", s.camera + 12, 3).Number("yaw", cyaw).Number("pitch", cpitch).Int(
@@ -387,13 +408,17 @@ void RegisterCommands() {
   }, true);
 
   // Game commands (bf_main/dev_state.cpp, run on the main thread at the next frame).
-  for (const char* game : {"level", "team", "deploy", "look", "turn"}) {
+  for (const char* game : {"level", "team", "deploy", "look", "turn", "teleport", "entities"}) {
     static const std::map<std::string, std::pair<const char*, const char*>> kHelp = {
         {"level", {"level [<level>[:<category>=<value>]]", "switch the local server's level (default Metro TDM)"}},
         {"team", {"team <us|ru>", "team for the next join; moves the player now if already in the level"}},
         {"deploy", {"deploy [kit 0-3]", "deploy from the spawn screen (0 assault, 1 engineer, 2 support, 3 recon)"}},
         {"look", {"look <yaw> <pitch>", "set the soldier's aim (aimer radians, as status player.aim_yaw/aim_pitch)"}},
         {"turn", {"turn <dyaw> <dpitch>", "turn the soldier's aim by radians (yaw right +, pitch up +)"}},
+        {"entities", {"entities <ServerClassName|0xTypeInfo> [max=64]", "live server entities of a class "
+                                                                         "(address/vtable)"}},
+        {"teleport", {"teleport <x> <y> <z> [heading]", "move the soldier (server side, as a spawn does); heading "
+                                                         "as status player.heading, default unchanged"}},
     };
     const auto& [usage, help] = kHelp.at(game);
     Register(game, usage, help, [](const Args& a) { return GameRequest(Rest(a, 0)); });
@@ -513,6 +538,136 @@ void RegisterCommands() {
              }
              Reply r;
              r.obj.Address("addr", uint32_t(addr)).Str("hex", hex);
+             return r;
+           }, true);
+  Register("find", "find f32|u32|bytes <v>[,<v>...] [tol=0.001] [<lo hex>-<hi hex>]",
+           "search guest memory for a run of floats (within tol), u32s or a hex byte string; default range "
+           "40000000-C0000000 (heaps and physical); returns up to 512 addresses and the total",
+           [](const Args& a) {
+             if (a.size() < 3) return Fail("usage: find f32|u32|bytes <values> [tol] [lo-hi]");
+             const int kind = a[1] == "f32" ? 0 : a[1] == "u32" ? 1 : a[1] == "bytes" ? 2 : -1;
+             if (kind < 0) return Fail("kind must be f32, u32 or bytes");
+             std::vector<double> values;
+             if (kind == 2) {
+               if (a[2].size() % 2 || a[2].size() > 128) return Fail("bytes: an even number of hex digits, up to 64 bytes");
+               for (size_t i = 0; i < a[2].size(); i += 2) {
+                 long long b;
+                 if (!ParseInt(a[2].substr(i, 2), b, 16)) return Fail("bad hex '" + a[2] + "'");
+                 values.push_back(double(b));
+               }
+             } else {
+               std::stringstream ss(a[2]);
+               for (std::string v; std::getline(ss, v, ',');) {
+                 double d;
+                 long long i;
+                 if (kind == 1 && v.rfind("0x", 0) == 0 && ParseInt(v.substr(2), i, 16)) {
+                   d = double(i);
+                 } else if (!ParseDouble(v, d)) {
+                   return Fail("bad value '" + v + "'");
+                 }
+                 values.push_back(d);
+               }
+             }
+             double tol = 0.001;
+             uint32_t lo = 0x40000000, hi = 0xC0000000;
+             for (size_t i = 3; i < a.size(); ++i) {
+               if (const size_t dash = a[i].find('-'); dash != std::string::npos && dash > 0) {
+                 long long l, h;
+                 if (!ParseInt(a[i].substr(0, dash), l, 16) || !ParseInt(a[i].substr(dash + 1), h, 16) || l >= h ||
+                     h > 0x100000000LL) {
+                   return Fail("range must be <lo hex>-<hi hex>");
+                 }
+                 lo = uint32_t(l), hi = uint32_t(std::min(h, 0xFFFFFFFFLL));
+               } else if (!ParseDouble(a[i], tol)) {
+                 return Fail("tolerance must be a number");
+               }
+             }
+             static auto fn = DllExport<int (*)(int, const double*, int, double, uint32_t, uint32_t, uint32_t*, int)>(
+                 "bf3_dev_find");
+             if (!fn) fn = DllExport<int (*)(int, const double*, int, double, uint32_t, uint32_t, uint32_t*, int)>(
+                 "bf3_dev_find");
+             if (!fn) return Fail("BF.Main is not loaded yet");
+             std::vector<uint32_t> hits(512);
+             const int total = fn(kind, values.data(), int(values.size()), tol, lo, hi, hits.data(), int(hits.size()));
+             std::string list = "[";
+             for (int i = 0; i < std::min<int>(total, int(hits.size())); ++i) list += (i ? "," : "") + Hex(hits[i]);
+             Reply r;
+             r.obj.Int("total", total).Raw("addrs", list + "]");
+             return r;
+           }, true);
+  Register("poke", "poke <guest addr> f32|u32|u16|u8|bytes <v>[,<v>...]",
+           "write guest memory (big-endian), e.g. poke 46087100 f32 1.5,2,3", [](const Args& a) {
+             long long addr = 0;
+             if (a.size() < 4 || !ParseInt(a[1], addr, 16) || addr < 0 || addr > 0xFFFFFFFFLL) {
+               return Fail("usage: poke <hex addr> f32|u32|u16|u8|bytes <values>");
+             }
+             const std::string& kind = a[2];
+             std::string bytes;
+             if (kind == "bytes") {
+               for (size_t i = 0; i + 1 < a[3].size(); i += 2) {
+                 long long b;
+                 if (!ParseInt(a[3].substr(i, 2), b, 16)) return Fail("bad hex");
+                 bytes += char(b);
+               }
+             } else {
+               const int width = kind == "f32" || kind == "u32" ? 4 : kind == "u16" ? 2 : kind == "u8" ? 1 : 0;
+               if (!width) return Fail("kind must be f32, u32, u16, u8 or bytes");
+               std::stringstream ss(a[3]);
+               for (std::string v; std::getline(ss, v, ',');) {
+                 uint32_t raw;
+                 if (kind == "f32") {
+                   double d;
+                   if (!ParseDouble(v, d)) return Fail("bad value '" + v + "'");
+                   const float f = float(d);
+                   std::memcpy(&raw, &f, 4);
+                 } else {
+                   long long i;
+                   if (!(v.rfind("0x", 0) == 0 ? ParseInt(v.substr(2), i, 16) : ParseInt(v, i))) {
+                     return Fail("bad value '" + v + "'");
+                   }
+                   raw = uint32_t(i);
+                 }
+                 for (int b = width - 1; b >= 0; --b) bytes += char(raw >> (8 * b));
+               }
+             }
+             static auto fn = DllExport<bool (*)(uint32_t, const uint8_t*, int)>("bf3_dev_poke");
+             if (!fn) fn = DllExport<bool (*)(uint32_t, const uint8_t*, int)>("bf3_dev_poke");
+             if (bytes.empty()) return Fail("nothing to write");
+             if (!fn || !fn(uint32_t(addr), reinterpret_cast<const uint8_t*>(bytes.data()), int(bytes.size()))) {
+               return Fail("not writable");
+             }
+             Reply r;
+             r.obj.Address("addr", uint32_t(addr)).Int("written", int64_t(bytes.size()));
+             return r;
+           });
+  Register("watch", "watch [<guest addr> [len=4] [hits=8] [secs=10] | off]",
+           "hardware write watch on a heap address: who writes it (host stacks; bf3dbg.py names the guest functions); "
+           "without arguments, the current watch and its records",
+           [](const Args& a) {
+             if (a.size() > 1 && a[1] == "off") {
+               StopWatch();
+               return Reply{};
+             }
+             if (a.size() > 1) {
+               long long addr, len = 4, hits = 8, secs = 10;
+               if (!ParseInt(a[1], addr, 16) || addr < 0 || addr > 0xFFFFFFFFLL) return Fail("bad address");
+               if ((a.size() > 2 && !ParseInt(a[2], len)) || (a.size() > 3 && !ParseInt(a[3], hits)) ||
+                   (a.size() > 4 && !ParseInt(a[4], secs)) || hits < 1 || hits > 256 || secs < 1 || secs > 3600) {
+                 return Fail("usage: watch <addr> [len 1|2|4|8] [hits 1-256] [secs 1-3600]");
+               }
+               std::string error;
+               if (!StartWatch(uint32_t(addr), uint32_t(len), int(hits), uint32_t(secs), error)) return Fail(error);
+             }
+             const WatchState w = GetWatch();
+             std::string records = "[";
+             for (size_t i = 0; i < w.records.size(); ++i) {
+               const WatchHit& h = w.records[i];
+               records += (i ? "," : "") +
+                          Obj().Int("tid", h.tid).Str("value", h.value_hex).Strings("frames", h.frames).Json();
+             }
+             Reply r;
+             r.obj.Address("addr", w.guest).Int("len", w.len).Bool("active", w.active).Int("hits", w.hits).Raw(
+                 "records", records + "]");
              return r;
            }, true);
   Register("shot", "shot", "capture the game window: \"bytes\" raw top-down BGRA follow the JSON line",

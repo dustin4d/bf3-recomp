@@ -149,6 +149,15 @@ void LoadDone(PPCContext& ctx, uint8_t* base) {
 
 }  // namespace
 
+// The skipped boot's profile load and first save are through (or skip_title is off): the front end can start other
+// work, such as a level switch, without racing them (a switch 0.5 s after the main menu appeared hung the load once).
+// The save is through when the options manager's pending request id (+0x914) is clear again.
+bool bf3_boot_flow_settled(uint8_t* base) {
+  if (!Enabled() || !g_skipped) return !Enabled();
+  if (!g_load_done || g_save_held) return false;
+  return !g_save_r3 || REX_LOAD_U32(g_save_r3 + 0x914) == 0;
+}
+
 // From the flow data read hook (ui_mouse.cpp): key r4, value** out (value: +8 payload, +16 type; 2 bool).
 void bf3_boot_flow_data_read(uint8_t* base, uint32_t key, uint32_t out) {
   if (!Enabled() || !out) return;

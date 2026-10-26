@@ -26,8 +26,11 @@
 #include <bit>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <condition_variable>
 #include <cstring>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -35,14 +38,23 @@
 
 REX_EXTERN(__imp__sub_8325A1D0);
 REX_EXTERN(__imp__sub_832C8108);
+REX_EXTERN(sub_833E9F10);
+REX_EXTERN(sub_8307DB88);
+REX_EXTERN(sub_8307DAF0);
 
 uint64_t bf3_level_entered_ingame_ms();  // level_boot.cpp
 uint32_t bf3_level_manager();            // level_boot.cpp
+bool bf3_boot_flow_settled(uint8_t* base);  // boot_flow.cpp
 uint32_t PracticeServerPlayer();         // practice.cpp
+uint32_t PracticePreRoundEntity(uint8_t* base);  // practice.cpp
+int PracticeLastKit();                   // practice.cpp
 void PracticeApplyTeam(PPCContext& ctx, uint8_t* base, uint32_t team);  // practice.cpp
 void PracticeRequestDeploy(int kit);     // practice.cpp
 extern "C" void bf3_practice_set_team(int team);       // practice.cpp
+int bf3_dev_find_impl(int kind, const double* values, int count, double tol, uint32_t lo, uint32_t hi, uint32_t* out,
+                      int capacity);  // below
 extern "C" void bf3_practice_launch(const char* spec);  // level_boot.cpp
+extern "C" int bf3_ui_screen_list(char* out, int capacity);  // ui_screens.cpp
 
 namespace {
 
@@ -74,6 +86,7 @@ uint32_t g_camera_calls = 0;
 
 // Game commands waiting for the main thread.
 std::vector<std::function<void(PPCContext&, uint8_t*)>> g_pending;
+std::condition_variable g_done_cv;  // RunOnMainThread waits here (with g_mutex)
 
 float LoadF(uint8_t* base, uint32_t a) { return std::bit_cast<float>(REX_LOAD_U32(a)); }
 
@@ -126,6 +139,45 @@ void Queue(std::function<void(PPCContext&, uint8_t*)> fn) {
   g_pending.push_back(std::move(fn));
 }
 
+// Runs fn on the main thread at the next frame boundary and waits for it (up to `timeout_ms`); false on timeout (the
+// game isn't running frames, e.g. a load): fn may still run later, so it must only touch what it owns.
+bool RunOnMainThread(std::function<void(PPCContext&, uint8_t*)> fn, int timeout_ms = 3000) {
+  auto done = std::make_shared<bool>(false);
+  std::unique_lock lock(g_mutex);
+  g_pending.push_back([fn = std::move(fn), done](PPCContext& ctx, uint8_t* base) {
+    fn(ctx, base);
+    std::lock_guard l(g_mutex);
+    *done = true;
+    g_done_cv.notify_all();
+  });
+  return g_done_cv.wait_for(lock, std::chrono::milliseconds(timeout_ms), [&] { return *done; });
+}
+
+// Server entities of a class (type info object, e.g. 0x8418958C ServerPreRoundEntity), iterated like the idle-kick
+// check sub_8377FFA0: sub_8307DB88(*(0x840C2C68) entity world, type, iterator, 1), then sub_8307DAF0(iterator) until 0.
+std::vector<uint32_t> ServerEntities(PPCContext& ctx, uint8_t* base, uint32_t type, size_t max) {
+  std::vector<uint32_t> out;
+  PPCContext saved = ctx;
+  ctx.r1.u64 = (saved.r1.u32 - 256) & ~0xFull;
+  const uint32_t iterator = ctx.r1.u32 + 112;
+  ctx.r3.u64 = REX_LOAD_U32(0x840C2C68);
+  ctx.r4.u64 = type;
+  ctx.r5.u64 = iterator;
+  ctx.r6.u64 = 1;
+  if (ctx.r3.u32) {
+    sub_8307DB88(ctx, base);
+    while (out.size() < max) {
+      ctx.r3.u64 = iterator;
+      sub_8307DAF0(ctx, base);
+      if (!ctx.r3.u32) break;
+      out.push_back(ctx.r3.u32);
+    }
+  }
+  ctx = saved;
+  return out;
+}
+
+
 std::vector<std::string> Split(const char* line) {
   std::vector<std::string> out;
   std::istringstream in(line ? line : "");
@@ -137,6 +189,67 @@ bool ParseFloat(const std::string& s, float& out) {
   char* end = nullptr;
   out = std::strtof(s.c_str(), &end);
   return end && *end == 0 && std::isfinite(out);
+}
+
+constexpr uint32_t kServerSoldierVtable = 0x82E325F0;
+constexpr uint32_t kWeaponHandlerVtable = 0x82DD5FE0, kWeaponSwitchingVtable = 0x82DCFC3C;
+constexpr uint32_t kWeaponVtable = 0x82DD8408, kFiringVtable = 0x82E77408;
+
+// Follows `offset` from `obj` to an object whose vtable is `vtable`; 0 if anything along the way doesn't match.
+uint32_t Follow(uint8_t* base, uint32_t obj, uint32_t offset, uint32_t vtable) {
+  if (!obj || !Readable(base, obj + offset, 4)) return 0;
+  const uint32_t next = REX_LOAD_U32(obj + offset);
+  return next && Readable(base, next, 4) && REX_LOAD_U32(next) == vtable ? next : 0;
+}
+
+// The local soldier's current weapon: ammo, name and attachments (see dev_shared.h).
+void ReadWeapon(uint8_t* base, uint32_t soldier, Snapshot& s) {
+  s.ammo_mag = s.ammo_reserve = -1;
+  const uint32_t handler = Follow(base, soldier, 0x34C, kWeaponHandlerVtable);
+  const uint32_t switching = Follow(base, handler, 0xCC, kWeaponSwitchingVtable);
+  const uint32_t weapon = Follow(base, switching, 0x24, kWeaponVtable);
+  if (!weapon) return;
+  if (const uint32_t firing = Follow(base, weapon, 0x15C, kFiringVtable); firing && Readable(base, firing + 0xF0, 8)) {
+    s.ammo_mag = int32_t(REX_LOAD_U32(firing + 0xF0));
+    s.ammo_reserve = int32_t(REX_LOAD_U32(firing + 0xF4));
+  }
+  std::string name, attachments;
+  for (uint32_t off = 0x8C; off < 0x8C + 8 * 0x10; off += 0x10) {
+    if (!Readable(base, weapon + off, 4)) break;
+    const uint32_t asset = REX_LOAD_U32(weapon + off);
+    if (asset < 0x40000000 || asset >= 0xA0000000 || !Readable(base, asset + 8, 4)) break;
+    const std::string path = GuestString(base, REX_LOAD_U32(asset + 8), 96);  // Weapons/<weapon>/<unlock>
+    if (path.rfind("Weapons/", 0) != 0) break;
+    const size_t slash = path.find('/', 8);
+    if (slash == std::string::npos) break;
+    const std::string dir = path.substr(8, slash - 8), unlock = path.substr(slash + 1);
+    if (name.empty()) name = dir;
+    if (unlock != "U_" + dir) attachments += (attachments.empty() ? "" : ";") + unlock;
+  }
+  std::snprintf(s.weapon, sizeof(s.weapon), "%s", name.c_str());
+  std::snprintf(s.attachments, sizeof(s.attachments), "%s", attachments.c_str());
+}
+
+// Server soldier teleport (main thread): sub_833E9F10(soldier r3, transform r4, r5 = 1) sets the server soldier's
+// transform the way a spawn does: unless soldier +747 is set, the entity transform and aim (sub_833E9620 with the aim
+// flag), the position at +272 (sub_83875BA8), and the soldier's physics at +388 (sub_830B2498, with r5 also
+// sub_830B2198). The transform goes on the guest stack below the caller's frame (16-byte aligned for lvx128).
+// Rows: left (cos h, 0, -sin h), up (0, 1, 0), forward (sin h, 0, cos h), position.
+bool TeleportServer(PPCContext& ctx, uint8_t* base, uint32_t soldier, const float pos[3], float heading) {
+  if (!soldier || REX_LOAD_U32(soldier) != kServerSoldierVtable) return false;
+  const float c = std::cos(heading), sn = std::sin(heading);
+  const float m[16] = {c, 0, -sn, 0, 0, 1, 0, 0, sn, 0, c, 0, pos[0], pos[1], pos[2], 1};
+  PPCContext saved = ctx;
+  const uint32_t sp = (saved.r1.u32 - 0x200) & ~0xFu;
+  const uint32_t xf = sp + 0x100;
+  for (int i = 0; i < 16; ++i) REX_STORE_U32(xf + 4 * i, std::bit_cast<uint32_t>(m[i]));
+  ctx.r1.u64 = sp;
+  ctx.r3.u64 = soldier;
+  ctx.r4.u64 = xf;
+  ctx.r5.u64 = 1;
+  sub_833E9F10(ctx, base);
+  ctx = saved;
+  return true;
 }
 
 }  // namespace
@@ -164,6 +277,9 @@ void bf3_main::DevFrame(PPCContext& ctx, uint8_t* base) {
   s.version = bf3::dev::kSnapshotVersion;
   s.uptime_s = Seconds(now - g_start);
   s.ticks = LocalAimTicks();
+  // The screen stack is read here, on the main thread that changes it, rather than from the API's socket thread.
+  const int n = bf3_ui_screen_list(s.screens, int(sizeof(s.screens)) - 1);
+  s.screens[std::clamp(n, 0, int(sizeof(s.screens)) - 1)] = 0;
 
   if (const uint32_t manager = bf3_level_manager(); manager && Readable(base, manager, 0x74)) {
     s.level_manager = manager;
@@ -172,6 +288,7 @@ void bf3_main::DevFrame(PPCContext& ctx, uint8_t* base) {
     s.level_loaded = REX_LOAD_U32(manager + 0x70) != 0;
     s.level_unloading = REX_LOAD_U8(manager + 0x3d);
   }
+  s.frontend_ready = bf3_boot_flow_settled(base);
   const uint64_t entered = bf3_level_entered_ingame_ms();
   s.ingame_s = entered ? (std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count() -
                           int64_t(entered)) / 1000.0
@@ -186,8 +303,30 @@ void bf3_main::DevFrame(PPCContext& ctx, uint8_t* base) {
       s.aim_pitch = LoadF(base, aimer + 0x10);
     }
   }
+  if (s.soldier && Readable(base, s.soldier + 0x20, 4)) s.health = LoadF(base, s.soldier + 0x20);
+  if (s.soldier) {
+    ReadWeapon(base, s.soldier, s);
+  } else {
+    s.ammo_mag = s.ammo_reserve = -1;
+  }
+  s.kit = PracticeLastKit();
   s.server_player = PracticeServerPlayer();
-  if (s.server_player && Readable(base, s.server_player + 0x324, 4)) s.team = REX_LOAD_U32(s.server_player + 0x324);
+  if (s.server_player && Readable(base, s.server_player, 0x3B4)) {
+    s.team = REX_LOAD_U32(s.server_player + 0x324);
+    s.server_soldier = REX_LOAD_U32(s.server_player + 0x3B0);
+    if (s.server_soldier && Readable(base, s.server_soldier, 0x40C)) {
+      s.server_health = LoadF(base, s.server_soldier + 0x20);
+      for (int i = 0; i < 3; ++i) s.server_pos[i] = LoadF(base, s.server_soldier + 0x400 + 4 * i);
+    } else {
+      s.server_soldier = 0;
+    }
+  }
+  if (const uint32_t pre = PracticePreRoundEntity(base); pre && Readable(base, pre, 0xBC)) {
+    s.preround_entity = pre;
+    s.round_players_needed = REX_LOAD_U32(pre + 0xA4);
+    s.round_countdown = LoadF(base, pre + 0xB4);
+    s.round_started = (REX_LOAD_U8(pre + 0xB8) & 0x80) != 0;
+  }
 
   std::lock_guard lock(g_mutex);
   if (s.soldier && s.soldier == g_xf_soldier) {
@@ -260,6 +399,89 @@ extern "C" __declspec(dllexport) int bf3_dev_peek(uint32_t addr, uint8_t* out, i
   return length;
 }
 
+// Writes raw (big-endian) bytes into guest memory; false unless the range is committed and writable.
+extern "C" __declspec(dllexport) bool bf3_dev_poke(uint32_t addr, const uint8_t* bytes, int length) {
+  if (length <= 0 || !Readable(g_base, addr, uint32_t(length))) return false;
+  MEMORY_BASIC_INFORMATION mbi;
+  if (!VirtualQuery(g_base + addr, &mbi, sizeof(mbi)) ||
+      !(mbi.Protect & (PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))) {
+    return false;
+  }
+  std::memcpy(g_base + addr, bytes, size_t(length));
+  return true;
+}
+
+// Searches committed guest memory in [lo, hi) for a run of `count` values: kind 0 = f32 (each within `tol`), 1 = u32,
+// 2 = bytes; f32/u32 4-byte aligned. Writes up to `capacity` addresses, returns how many were found in total.
+extern "C" __declspec(dllexport) int bf3_dev_find(int kind, const double* values, int count, double tol, uint32_t lo,
+                                                  uint32_t hi, uint32_t* out, int capacity) {
+  return bf3_dev_find_impl(kind, values, count, tol, lo, hi, out, capacity);
+}
+
+int bf3_dev_find_impl(int kind, const double* values, int count, double tol, uint32_t lo, uint32_t hi, uint32_t* out,
+                      int capacity) {
+  if (!g_base || count <= 0 || count > 64 || kind < 0 || kind > 2 || (kind != 2 && count > 16)) return 0;
+  uint8_t* base = g_base;
+  const uint32_t step = kind == 2 ? 1 : 4, span = kind == 2 ? uint32_t(count) : uint32_t(count) * 4;
+  uint32_t want_u32[16] = {};
+  uint8_t want_u8[64] = {};
+  for (int i = 0; i < count; ++i) {
+    if (kind == 1) want_u32[i] = uint32_t(int64_t(values[i]));
+    if (kind == 2) want_u8[i] = uint8_t(values[i]);
+  }
+  int found = 0;
+  uint64_t addr = lo & ~uint64_t(step - 1);
+  while (addr < hi) {
+    MEMORY_BASIC_INFORMATION mbi;
+    if (!VirtualQuery(base + addr, &mbi, sizeof(mbi))) break;
+    const uint64_t region_end =
+        std::min<uint64_t>(hi, uint64_t(static_cast<uint8_t*>(mbi.BaseAddress) - base) + mbi.RegionSize);
+    const bool readable = mbi.State == MEM_COMMIT && !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD));
+    if (readable) {
+      for (; addr + span <= region_end; addr += step) {
+        const uint32_t a = uint32_t(addr);
+        bool match = true;
+        for (int i = 0; i < count && match; ++i) {
+          if (kind == 0) {
+            const float v = LoadF(base, a + 4 * i);
+            match = std::fabs(double(v) - values[i]) <= tol;
+          } else if (kind == 1) {
+            match = REX_LOAD_U32(a + 4 * i) == want_u32[i];
+          } else {
+            match = base[a + i] == want_u8[i];
+          }
+        }
+        if (match) {
+          if (found < capacity) out[found] = a;
+          ++found;
+        }
+      }
+    }
+    addr = std::max(addr, region_end);
+  }
+  return found;
+}
+
+// A class's type info by name: its name string in the image (preceded by a NUL), the member record in the type
+// registry (0x84000000-0x84300000) that points at it, and the class info whose +0 points at that record. 0 if not found.
+static uint32_t FindTypeInfo(uint8_t* base, const std::string& name) {
+  std::vector<double> bytes;
+  for (char c : name) bytes.push_back(double(uint8_t(c)));
+  bytes.push_back(0);
+  uint32_t strings[16], records[16], infos[16];
+  const int ns = bf3_dev_find_impl(2, bytes.data(), int(bytes.size()), 0, 0x82000000, 0x84300000, strings, 16);
+  for (int i = 0; i < std::min(ns, 16); ++i) {
+    if (REX_LOAD_U8(strings[i] - 1) != 0) continue;  // the tail of a longer name
+    const double str = strings[i];
+    const int nr = bf3_dev_find_impl(1, &str, 1, 0, 0x84000000, 0x84300000, records, 16);
+    for (int r = 0; r < std::min(nr, 16); ++r) {
+      const double rec = records[r];
+      if (bf3_dev_find_impl(1, &rec, 1, 0, 0x84000000, 0x84300000, infos, 16) > 0) return infos[0];
+    }
+  }
+  return 0;
+}
+
 // Game commands. Returns false with the reason in `reply` if the command can't be taken; true once it is queued
 // (or done), `reply` then says what will happen.
 //   level [<level>[:<category>=<value>]]   switch the local server to a level (default Metro TDM)
@@ -285,6 +507,7 @@ extern "C" __declspec(dllexport) bool bf3_dev_request(const char* line, char* re
   if (cmd == "level") {
     const uint32_t manager = bf3_level_manager();
     if (!manager || !REX_LOAD_U32(manager + 0x70)) return answer(false, "level manager not ready (no level loaded)");
+    if (!bf3_boot_flow_settled(base)) return answer(false, "front end still booting (profile load/save)");
     const std::string spec = args.size() > 1 ? args[1] : kMetroTdm;
     bf3_practice_launch(spec.c_str());
     return answer(true, "level switch requested: " + spec);
@@ -323,6 +546,45 @@ extern "C" __declspec(dllexport) bool bf3_dev_request(const char* line, char* re
       bf3_main::InjectLook(dyaw, dpitch);
     });
     return answer(true, absolute ? "aim set" : "aim turned");
+  }
+  if (cmd == "teleport") {
+    float p[3], heading = 0;
+    if (args.size() < 4 || !ParseFloat(args[1], p[0]) || !ParseFloat(args[2], p[1]) || !ParseFloat(args[3], p[2]) ||
+        (args.size() > 4 && !ParseFloat(args[4], heading))) {
+      return answer(false, "usage: teleport <x> <y> <z> [heading radians]");
+    }
+    const uint32_t player = PracticeServerPlayer();
+    const uint32_t soldier = player ? REX_LOAD_U32(player + 0x3B0) : 0;
+    if (!soldier) return answer(false, "no server soldier (not spawned)");
+    if (args.size() <= 4) {  // keep the current heading: forward row of the client transform
+      std::lock_guard lock(g_mutex);
+      heading = std::atan2(g_xf[8], g_xf[10]);
+    }
+    const std::array<float, 3> pos{p[0], p[1], p[2]};
+    Queue([soldier, pos, heading](PPCContext& ctx, uint8_t* base) {
+      const bool ok = TeleportServer(ctx, base, soldier, pos.data(), heading);
+      REXLOG_INFO("debug api: teleport server soldier {:08X} to ({:.2f}, {:.2f}, {:.2f}) heading {:.3f}: {}", soldier,
+                  pos[0], pos[1], pos[2], heading, ok ? "done" : "not a server soldier");
+    });
+    return answer(true, "teleport queued");
+  }
+  if (cmd == "entities") {
+    if (args.size() < 2) return answer(false, "usage: entities <ServerClassName|type info hex> [max=64]");
+    uint32_t type = 0;
+    if (args[1].rfind("0x", 0) == 0) {
+      type = uint32_t(std::strtoul(args[1].c_str() + 2, nullptr, 16));
+    } else {
+      type = FindTypeInfo(base, args[1]);
+      if (!type) return answer(false, "no type info for '" + args[1] + "'");
+    }
+    const size_t max = args.size() > 2 ? size_t(std::max(1, std::atoi(args[2].c_str()))) : 64;
+    auto found = std::make_shared<std::vector<uint32_t>>();
+    if (!RunOnMainThread([type, max, found](PPCContext& ctx, uint8_t* b) { *found = ServerEntities(ctx, b, type, max); })) {
+      return answer(false, "the main thread didn't run a frame in time");
+    }
+    std::string list = fmt::format("type 0x{:08X}:", type);
+    for (uint32_t e : *found) list += fmt::format(" 0x{:08X}/vt{:08X}", e, REX_LOAD_U32(e));
+    return answer(true, list);
   }
   return answer(false, "unknown game command '" + cmd + "'");
 }

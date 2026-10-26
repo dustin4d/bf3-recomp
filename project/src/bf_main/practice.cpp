@@ -20,7 +20,8 @@
 // +0xA8 restart players, +0xAC start countdown, +0xB0 restart countdown; players array +0x94..+0x98) and checks them
 // when a player enters or leaves (sub_837D3BE0): start = +0xB4 = +0xAC, +0xB8 |= 0x80, sub_83838328(entity, 1),
 // replication dirty bit sub_83C5E700(entity + 0x80, 1). The
-// copies become 1 and 0 (never back to pre-round), and the round starts right away the same way.
+// copies become 1 and 0 (never back to pre-round), and the round starts right away the same way: +0xB4 (the time
+// left, from +0xAC = 10 s) then counts down, and the soldier can move once it reaches 0.
 // BF3_PRACTICE_PREROUND=1 keeps the pre-round.
 //
 // BF3_AUTO_DEPLOY=<kit 0-3> deploys automatically 8 s after the spawn screen appears (tests).
@@ -61,6 +62,8 @@ std::atomic<bool> g_team_pending{false};
 std::atomic<bool> g_preround_pending{false};
 
 std::atomic<uint32_t> g_team{0};  // 0: BF3_TEAM (default 1, US)
+std::atomic<uint32_t> g_preround_entity{0};  // the level's ServerPreRoundEntity (last seen)
+std::atomic<uint32_t> g_preround_vtable{0};  // its vtable, to tell it is still alive
 
 uint32_t PreferredTeam() {
   if (const uint32_t team = g_team.load()) return team;
@@ -79,7 +82,8 @@ void SetTeam(PPCContext& ctx, uint8_t* base, uint32_t player, uint32_t team) {
 
 }  // namespace
 
-void SoloRound(PPCContext& ctx, uint8_t* base) {
+// Iterates the ServerPreRoundEntities and records the last one; with `start`, lets the round start with one player.
+void SoloRound(PPCContext& ctx, uint8_t* base, bool start) {
   PPCContext saved = ctx;
   ctx.r1.u64 = (saved.r1.u32 - 256) & ~0xFull;
   const uint32_t iterator = ctx.r1.u32 + 112;
@@ -94,7 +98,9 @@ void SoloRound(PPCContext& ctx, uint8_t* base) {
     const uint32_t entity = ctx.r3.u32;
     if (!entity) break;
     const uint32_t data = REX_LOAD_U32(entity + 0x14);
-    if (!data) continue;
+    g_preround_vtable = REX_LOAD_U32(entity);
+    g_preround_entity = entity;
+    if (!data || !start) continue;
     REXLOG_INFO("practice: pre-round entity {:08X} data {:08X}: start players {} restart players {} -> 1", entity, data,
                 REX_LOAD_U32(data + 0x60), REX_LOAD_U32(data + 0x6C));
     REX_STORE_U32(data + 0x60, 1);
@@ -136,10 +142,18 @@ void PracticeOnMessage(uint8_t* base, uint32_t msg) {
   }
 }
 
+std::atomic<int> g_last_kit{-1};
 void PracticeRequestDeploy(int kit) { g_deploy_kit = kit; }
+int PracticeLastKit() { return g_last_kit.load(); }
 
 // The ServerPlayer that last entered a level (0 before).
 uint32_t PracticeServerPlayer() { return g_entered_player.load(); }
+
+// The level's ServerPreRoundEntity once the spawn screen has been up, 0 if none or gone (its vtable changed).
+uint32_t PracticePreRoundEntity(uint8_t* base) {
+  const uint32_t entity = g_preround_entity.load();
+  return entity && REX_LOAD_U32(entity) == g_preround_vtable.load() ? entity : 0;
+}
 
 // Moves the player that entered the level to `team` now, if it is on another one (main thread).
 void PracticeApplyTeam(PPCContext& ctx, uint8_t* base, uint32_t team) {
@@ -194,10 +208,11 @@ void PracticeTick(PPCContext& ctx, uint8_t* base) {
       const char* v = std::getenv("BF3_PRACTICE_PREROUND");
       return v && *v == '1';
     }();
-    if (!keep) SoloRound(ctx, base);
+    SoloRound(ctx, base, !keep);
   }
   const int kit = g_deploy_kit.exchange(-1);
   if (kit < 0) return;
+  g_last_kit = kit;
 
   PPCContext saved = ctx;
   sub_83280730(ctx, base);

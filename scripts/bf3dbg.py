@@ -9,11 +9,15 @@ Command line:
   bf3dbg.py wait <phase> [timeout_s]    wait until status.phase is <phase> (boot, main_menu, menu, loading,
                                         spawn_screen, playing, ingame_menu)
   bf3dbg.py shot <out.png>              capture the game window
-  bf3dbg.py watch [interval_s]          print a status line every interval
-  bf3dbg.py run [secs] [--metro] [--team us|ru] [--kit n] [--walk ms] [--look yaw pitch] [--exe-args ...]
+  bf3dbg.py monitor [interval_s]        print a status line every interval
+  bf3dbg.py watch <addr> [len] [hits] [secs]
+                                        hardware write watch; prints the writers by guest function
+  bf3dbg.py run [secs] [--metro] [--team us|ru] [--kit n] [--spot name] [--walk ms] [--look yaw pitch]
+                [--exe-args ...]
                                         deploy + launch the game (scripts/win_run.sh, in the background), wait for the
                                         API; with --metro, go straight to Metro TDM and deploy (no menu clicks)
-  bf3dbg.py metro [--team ru] [--kit 0] [--walk ms] [--look yaw pitch]
+  bf3dbg.py tp <spot|x,y,z[,heading]>  teleport (spots: sunny_street, balcony) and set the spot's aim
+  bf3dbg.py metro [--team ru] [--kit 0] [--spot name] [--walk ms] [--look yaw pitch]
                                         the Metro TDM recipe on an already running game
 
 As a module: `from bf3dbg import Bf3` -> Bf3().cmd("status"), .wait_phase("playing"), .shot("x.png"), .metro().
@@ -32,6 +36,14 @@ import zlib
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_PORT = int(os.environ.get("BF3_DEBUG_API", "4790") or 4790)
 METRO_TDM = "Levels/MP_Subway/MP_Subway:GameMode=TeamDeathMatch0"
+
+# Metro TDM test spots: soldier origin (x, y, z), heading (status player.heading) and aim (look yaw, pitch).
+SPOTS = {
+    # Sunny street, pale pavement: best for viewmodel/body checks (looking down at the legs).
+    "sunny_street": ((-229.091, 64.437, -543.129), -1.534, (1.534, -1.219)),
+    # Balcony over the park.
+    "balcony": ((-229.239, 69.573, -537.213), -1.381, (1.381, 0.0)),
+}
 
 
 class Bf3Error(RuntimeError):
@@ -120,20 +132,36 @@ class Bf3:
         write_png(path, reply["width"], reply["height"], data)
         return path
 
-    def wait_movable(self, timeout=30.0):
-        """After a deploy the round start holds the soldier for a few seconds (pre-round countdown; no round state in
-        the API yet): taps W until the position changes. Returns the seconds waited."""
-        t0 = time.time()
-        start = self.status()["player"].get("pos")
-        while time.time() - t0 < timeout:
-            self.cmd("key W 250")
-            time.sleep(0.6)
-            pos = self.status()["player"].get("pos")
-            if start and pos and sum((a - b) ** 2 for a, b in zip(pos, start)) > 0.01:
-                return time.time() - t0
-        raise Bf3Error(f"the soldier did not move within {timeout:.0f} s")
+    def deploy(self, kit=0, timeout=60):
+        """Deploys from the spawn screen and waits for the soldier. The spawn screen needs a moment before its spawn
+        system takes a deploy, so the request is repeated until the soldier exists."""
+        self.wait(lambda s: s["phase"] in ("spawn_screen", "playing"), timeout, what="the spawn screen")
+        deadline = time.time() + timeout
+        while self.status()["phase"] != "playing":
+            self.cmd(f"deploy {kit}")
+            try:
+                self.wait(lambda s: s["phase"] == "playing", 8, what="the soldier")
+            except Bf3Error:
+                if time.time() >= deadline:
+                    raise
+        return self.status()
 
-    def metro(self, team="ru", kit=0, walk_ms=0, look=None, log=print):
+    def tp(self, spot):
+        """Teleports to a named spot (SPOTS) or "x,y,z[,heading]", waits for the client to follow, then sets the aim."""
+        if spot in SPOTS:
+            (x, y, z), heading, aim = SPOTS[spot]
+        else:
+            v = [float(t) for t in spot.split(",")]
+            (x, y, z), heading, aim = v[:3], (v[3] if len(v) > 3 else None), None
+        self.cmd(f"teleport {x} {y} {z}" + (f" {heading}" if heading is not None else ""))
+        self.wait(lambda s: s["player"].get("pos") and sum((a - b) ** 2 for a, b in zip(s["player"]["pos"], (x, y, z)))
+                  < 0.25, 5, what=f"the soldier at {spot}")
+        if aim:
+            self.cmd(f"look {aim[0]} {aim[1]}")
+            time.sleep(0.2)
+        return self.status()
+
+    def metro(self, team="ru", kit=0, walk_ms=0, look=None, log=print, spot=None):
         """Main menu -> Metro TDM on the local server -> deploy, without menu input. Returns the playing status."""
         s = self.wait(lambda s: s["phase"] == "main_menu" or s["phase"] in ("spawn_screen", "playing"), 180,
                       what="the main menu")
@@ -142,30 +170,54 @@ class Bf3:
             self.cmd(f"team {team}")
             self.cmd(f"level {METRO_TDM}")
             t0 = time.time()
-            self.wait(lambda s: s["phase"] == "spawn_screen" and "MP_Subway" in s["level"]["name"], 240,
+            self.wait(lambda s: s["phase"] == "spawn_screen" and "MP_Subway" in s["level"]["name"], 120,
                       what="the Metro spawn screen")
             log(f"spawn screen after {time.time() - t0:.1f} s")
         if self.status()["phase"] != "playing":
-            # The spawn screen needs a moment before its spawn system takes a deploy; retry until the soldier exists.
-            deadline = time.time() + 60
-            while True:
-                self.cmd(f"deploy {kit}")
-                try:
-                    self.wait(lambda s: s["phase"] == "playing", 8, what="the soldier")
-                    break
-                except Bf3Error:
-                    if time.time() >= deadline:
-                        raise
+            self.deploy(kit)
         s = self.status()
         log(f"playing: pos {fmt_vec(s['player'].get('pos'))} team {s['player']['team']}")
-        if walk_ms or look:
-            log(f"movable after {self.wait_movable():.1f} s")
+        if walk_ms or look or spot:
+            # The round start holds the soldier for its countdown (status round.state).
+            t0 = time.time()
+            self.wait(lambda s: s.get("round", {}).get("state") == "running", 30, what="the round start")
+            log(f"round running after {time.time() - t0:.1f} s")
+        if spot:
+            s = self.tp(spot)
+            log(f"at {spot}: pos {fmt_vec(s['player'].get('pos'))}")
+        if walk_ms:
             self.cmd(f"key W {walk_ms}")
             time.sleep(walk_ms / 1000 + 0.3)
         if look:
             self.cmd(f"look {look[0]} {look[1]}")
             time.sleep(0.2)
         return self.status()
+
+
+_maps = {}
+
+
+def resolve_frame(frame, build_dir=os.path.join(ROOT, "project", "out", "build", "win-cross-release")):
+    """"bf3_BF_Main.dll+0x1234" -> "bf3_BF_Main.dll!sub_83264488+0x1a" from the linker map (recompiled functions are
+    sub_<guest address>)."""
+    import bisect
+    module, _, rva = frame.partition("+0x")
+    if not rva:
+        return frame
+    if module not in _maps:
+        path = os.path.join(build_dir, os.path.splitext(module)[0] + ".map")
+        if os.path.exists(path):
+            sys.path.insert(0, os.path.join(ROOT, "scripts"))
+            from resolve_rva import load_map
+            _maps[module] = load_map(path)
+        else:
+            _maps[module] = None
+    table = _maps[module]
+    if not table:
+        return frame
+    addrs, names = table
+    i = bisect.bisect_right(addrs, int(rva, 16)) - 1
+    return f"{module}!{names[i]}+{int(rva, 16) - addrs[i]:#x}" if i >= 0 else frame
 
 
 def write_png(path, width, height, bgra):
@@ -249,6 +301,7 @@ def main():
         ap.add_argument("--kit", type=int, default=0)
         ap.add_argument("--walk", type=int, default=0, help="hold W this many ms after deploying")
         ap.add_argument("--look", nargs=2, type=float, metavar=("YAW", "PITCH"))
+        ap.add_argument("--spot", help="teleport to a test spot: " + ", ".join(SPOTS) + " or x,y,z[,heading]")
         ap.add_argument("--shot", help="capture the game window to this PNG at the end")
         a = ap.parse_args(argv[1:])
         proc = None
@@ -258,7 +311,7 @@ def main():
             print(f"launched (pid {proc.pid}, {a.secs} s); waiting for the debug API")
         bf = Bf3(connect_timeout=90 if proc else 0)
         if verb == "metro" or a.metro:
-            s = bf.metro(a.team, a.kit, a.walk, a.look)
+            s = bf.metro(a.team, a.kit, a.walk, a.look, spot=a.spot)
             print(status_line(s))
         if a.shot:
             print("shot:", bf.shot(a.shot))
@@ -269,6 +322,9 @@ def main():
     except OSError:
         print(f"bf3dbg: no game answering on 127.0.0.1:{DEFAULT_PORT} (development build running?)", file=sys.stderr)
         return 1
+    if verb == "tp":
+        print(status_line(bf.tp(argv[1])))
+        return 0
     if verb == "quit":
         try:
             bf.request("quit")
@@ -284,11 +340,23 @@ def main():
     if verb == "shot":
         print(bf.shot(argv[1] if len(argv) > 1 else os.path.join(ROOT, "logs", "dbg", "shot.png")))
         return 0
-    if verb == "watch":
+    if verb == "monitor":
         interval = float(argv[1]) if len(argv) > 1 else 1.0
         while True:
             print(status_line(bf.status()), flush=True)
             time.sleep(interval)
+    if verb == "watch" and len(argv) > 1 and argv[1] != "off":
+        # Arm, then wait for the hits (or the time) and print the writers by guest function.
+        reply = bf.cmd(" ".join(argv))
+        while reply.get("active"):
+            time.sleep(0.25)
+            reply = bf.cmd("watch")
+        print(f"watch {reply['addr']}: {reply['hits']} write(s)")
+        for h in reply["records"]:
+            print(f"  t{h['tid']} value {h['value']}")
+            for f in h["frames"][:12]:
+                print("    " + resolve_frame(f))
+        return 0
     reply, _ = bf.request(" ".join(argv))
     print(json.dumps(reply, indent=2))
     return 0 if reply.get("ok") else 1

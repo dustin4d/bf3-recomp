@@ -225,28 +225,64 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
 - Testing: `SHOTS=3000 scripts/win_run.sh <secs> <level>` deploys, runs from C:\Games\BF3-recomp with
   `--game_data_root=C:\Games\BF3-recomp\game`, logs to `logs/win-run.log`, user data to `logs/win-userdata`.
 - Debug API (2026-10-26; development builds only, CMake option `BF3_DEV_TOOLS`, ON by default; preset
-  `win-cross-ship` turns it OFF for production and compiles none of it). Use it for tests instead of menu clicks and
-  timed pad scripts:
-  - `scripts/bf3dbg.py run 300 --metro [--team ru] [--kit 0] [--walk ms] [--look yaw pitch] [--shot out.png]`
-    deploys, launches (win_run.sh in the background, 300 s), boots to the main menu and goes straight to Metro TDM
-    (`team`, `level`, `deploy`; ~35 s to playing). `bf3dbg.py metro` does the same on a running game. The solo round
-    start holds the soldier ~10 s after the deploy (countdown); `--walk`/`--look` first wait until W moves it.
-  - Commands (`bf3dbg.py <words>`, prints JSON; `help` lists them): `status` (phase boot/main_menu/menu/loading/
-    spawn_screen/playing/ingame_menu, UI stack, level, player pos/heading/aim/velocity/team, render camera, fps over
-    1 s), `perf [s]`, `frames`, `level [spec]`, `team us|ru`, `deploy [kit]`, `look <yaw> <pitch>` / `turn` (aimer
-    radians), `key W+LShift 2000|down|up` (key_* names, also LMB/RMB), `pad LY=32767+RT 1500|down|release`,
-    `mouse move|click|down|up|wheel|look`, `cvar <name> [value]`, `peek <hex addr> [n]`, `shot` (bf3dbg.py shot x.png),
-    `quit`. `wait <phase> [s]` and `watch [s]` are client-side. Input needs no window focus.
+  `win-cross-ship` turns it OFF for production and compiles none of it: verified no bf3_dev_* exports or strings).
+  Use it for tests instead of menu clicks and timed pad scripts:
+  - `scripts/bf3dbg.py run 300 --metro [--team ru] [--kit 0] [--spot sunny_street] [--walk ms] [--look yaw pitch]
+    [--shot out.png]` deploys, launches (win_run.sh in the background; closes a game still running), boots to the
+    main menu and goes straight to Metro TDM (`team`, `level`, `deploy`; ~35 s to playing, ~45 s to the spot).
+    `bf3dbg.py metro` does the same on a running game; `bf3dbg.py tp <spot|x,y,z[,heading]>` teleports and aims.
+    Spots (SPOTS in bf3dbg.py): sunny_street (the viewmodel/body check spot), balcony. As a module:
+    `from bf3dbg import Bf3` (cmd, status, wait, wait_phase, deploy, tp, metro, shot).
+  - Commands (`bf3dbg.py <words>`, prints JSON; `help` lists them):
+    - state: `status` (phase boot/main_menu/menu/loading/spawn_screen/playing/dead/ingame_menu, UI stack, level and
+      frontend_ready, player pos/heading/aim/velocity/team/health/weapon/attachments/ammo_mag/ammo_reserve/kit, server
+      soldier/health/pos, round state/countdown, render camera, fps over 1 s), `perf [s]`, `frames`.
+    - game (main thread, next frame): `level [spec]` (refused until the boot's profile load/save is through: a switch
+      0.5 s after the main menu hung the load once), `team us|ru`, `deploy [kit 0-3]`, `look <yaw> <pitch>` / `turn`
+      (aimer radians), `teleport <x> <y> <z> [heading]`, `entities <ServerClassName|0xTypeInfo>`.
+    - input (no focus needed): `key W+LShift 2000|down|up` (key_* names, also LMB/RMB, 1/2 weapon slots),
+      `pad LY=32767+RT 1500|down|release`, `mouse move|click|down|up|wheel|look`.
+    - tools: `cvar <name> [value]`, `peek <hex> [n]`, `poke <hex> f32|u32|u16|u8|bytes <v,...>`,
+      `find f32|u32|bytes <v,...> [tol] [lo-hi]` (default 40000000-C0000000, up to 512 hits),
+      `watch <hex> [len] [hits] [secs]` (hardware write watch, heap only; bf3dbg.py prints the writers as guest
+      sub_X frames from the linker maps), `shot`, `quit`. Client-side: `wait <phase> [s]`, `monitor [s]`.
+    - `scripts/addr_refs.py <hex>` finds code building an address with lis+addi/lwz (Ghidra misses those).
   - Conventions: positions are Frostbite world space (Y up). Soldier transform rows left/up/forward/position, the
-    soldier faces +forward; the render camera looks down -forward. camera yaw = -aim_yaw (mod 2pi), camera pitch =
-    aim_pitch. Eye = soldier origin + 1.60 m standing.
+    soldier faces +forward (heading = atan2(f.x, f.z)); the render camera looks down -forward. camera yaw = heading
+    = -aim_yaw (mod 2pi), camera pitch = aim_pitch. Eye = soldier origin + 1.60 m standing.
   - Server: `project/src/dev/debug_api.cpp` (TCP 127.0.0.1:4790, BF3_DEBUG_API=<port>|0; one line in, one JSON line
-    out; add a command with one Register() call). Game side: `project/src/bf_main/dev_state.cpp` (snapshot at the
-    frame boundary, game commands run on the main thread there; shared layout `project/src/dev/dev_shared.h`, bump
-    kSnapshotVersion when it changes). Hooks: sub_8325A1D0(soldier, transform, flag) sets the soldier's world
-    transform (local soldier recorded); sub_832C8108(this, out, r5) writes the render camera transform to out.
-  - Phase 2 (planned): teleport (server and client soldier), health/ammo/kit, round state (tickets, phase, time).
-    Phase 3: per-frame telemetry CSV, pause/step/timescale, free camera, optional overlay.
+    out; add a command with one Register() call), write watch `project/src/dev/dev_watch.cpp`. Game side:
+    `project/src/bf_main/dev_state.cpp` (snapshot at the frame boundary; game commands run on the main thread there,
+    RunOnMainThread waits for a result; shared layout `project/src/dev/dev_shared.h`, bump kSnapshotVersion when it
+    changes).
+  - Game structures found for it (2026-10-26; addresses are BF.Main guest code):
+    - Entity transform (client and server): `*(entity+0x1C)` block; with bit 18 of `entity+8`, the transform is at
+      block + byte[block+6] * 80 + 16 (64 bytes, position at +0x30), else at block (sub_833E1AB8 reads it so).
+    - Client soldier: sub_8325A1D0(soldier, transform, flag) sets its transform (hooked); health f32 +0x20 (what the
+      HUD shows; set by replication). Current weapon: +0x34C weapon handler (vt 0x82DD5FE0, sub_832D1BA0's this) ->
+      +0xCC weapon switching state (vt 0x82DCFC3C; sub_83259218 sets +0x24, +0x14 previous) -> +0x24 weapon
+      (vt 0x82DD8408) -> +0x15C firing (vt 0x82E77408) -> +0xF0 u32 magazine, +0xF4 reserve. Weapon +0x8C/+0x9C/...
+      (every 0x10): unlock assets (name at +8 "Weapons/<weapon>/U_<...>": attachments, then the weapon itself).
+      Not +0x450 -> +0x6D4: that slot only held the assault kit's weapon.
+    - Server: ServerPlayer +0x3B0 its soldier (vt 0x82E325F0; 0 while dead), +0x324 team. Server soldier health f32
+      +0x20 (authoritative; regenerates), +0x400 a copy of the position (+0x410 the previous one, sub_833E1AB8), set
+      each update from the physics through sub_833E9620(soldier, transform, aim flag) -> sub_838344A0/sub_83834248.
+      Writing +0x400 or the transform directly is undone by the physics within a tick.
+    - Teleport: sub_833E9F10(server soldier, transform, 1), the spawn path: unless soldier +747 is set, set transform
+      with aim (sub_833E9620), +272 position (sub_83875BA8), physics at +388 (sub_830B2498, sub_830B2198). The client
+      follows in ~0.25 s; falling from a teleport deals normal fall damage (a 15 m drop: 100 -> 32.4).
+    - Round: ServerPreRoundEntity (type info 0x8418958C) +0xA4 players needed, +0xAC start countdown (10 s), +0xB4
+      time left, +0xB8 bit 0x80 counting/started. The soldier can move once +0xB4 <= 0 (~10 s after the deploy).
+    - Entities: type info objects (BSS 0x84xxxxxx) +0 -> member record whose +0 is the class name string; server
+      entities of a type via sub_8307DB88(*(0x840C2C68), type, iterator, 1) / sub_8307DAF0(iterator).
+      ServerKillCounterEntity (0x8418953C): TDM has two (data +0x14, team at data +0x6C); +0xA8 = 100 (likely the
+      kill goal). The live score field is not identified (a suicide changed nothing; needs a real kill to verify).
+  - Open: intermittent crash in the server soldier's physics (2 of ~15 sessions, both after walking; not reproduced
+    by walking soaks, teleports or memory scans alone): guest read of 0x8 in sub_83B99228 <- sub_83B96FF0 <-
+    sub_830B1BE8 <- sub_830B2628 <- sub_833E1990 (server soldier update) <- sub_8343A988. Also seen once during a
+    level switch (pre-existing): ui_screens.cpp ScreenList read a garbage pointer from frame_rate.cpp's Playing();
+    status now takes the screen stack from the main thread's snapshot, so the API adds no second reader.
+  - Phase 3 (planned): per-frame telemetry CSV, pause/step/timescale, free camera, optional overlay; scores.
 - `find_unregistered.py` hits that land inside a function show up after codegen as `Unresolved b target X from Y`;
   the culprit is the added entry between X and Y. Remove it and regenerate.
 - Headless decompile: `BF3Decompile.java <out.txt> <start>-<end> | <addr>...` (launcher: 82010000-8201C650).
