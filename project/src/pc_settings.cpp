@@ -1,7 +1,8 @@
 // PC SETTINGS screen (see pc_settings.h). Adapted from the Trials HD port's KEY BINDINGS screen.
 //
 // The game sees an Xbox 360 controller driven by ReXGlue's keyboard/mouse emulation (keybind_* flags, mnk_mouse,
-// mnk_sensitivity); this screen edits those flags under BF3's action names, plus fullscreen/vsync. While it is open the
+// mnk_sensitivity); this screen edits those flags under BF3's action names, plus the display flags (fullscreen,
+// present_vsync = host vsync, max_fps = gameplay frame rate limit, read by bf_main/frame_rate.cpp). While it is open the
 // game sees an idle controller (pad_inject.h). Flag writes take the input lock exclusively: the keyboard driver copies
 // the keybind strings on every guest poll.
 
@@ -34,6 +35,8 @@
 #if defined(_WIN32)
 #include <windows.h>
 #endif
+
+REXCVAR_DEFINE_INT32(max_fps, 0, "BF3", "Frame rate limit while playing (0 = unlimited; menus and loading keep 30)");
 
 namespace bf3::pc_settings {
 namespace {
@@ -101,7 +104,9 @@ const std::vector<std::string>& OwnedFlags() {
         if (std::find(out.begin(), out.end(), a.flag) == out.end()) out.push_back(a.flag);
       }
     }
-    for (const char* f : {"mnk_mouse", "mnk_sensitivity", "fullscreen", "vsync"}) out.push_back(f);
+    for (const char* f : {"mnk_mouse", "mnk_sensitivity", "fullscreen", "present_vsync", "max_fps"}) {
+      out.push_back(f);
+    }
     return out;
   }();
   return flags;
@@ -163,7 +168,8 @@ class SettingsDialog final : public rex::ui::ImGuiDialog {
     mouse_look_ = rex::cvar::GetFlagByName("mnk_mouse") == "true";
     sensitivity_ = std::stof(rex::cvar::GetFlagByName("mnk_sensitivity"));
     fullscreen_ = rex::cvar::GetFlagByName("fullscreen") == "true";
-    vsync_ = rex::cvar::GetFlagByName("vsync") == "true";
+    vsync_ = rex::cvar::GetFlagByName("present_vsync") == "true";
+    max_fps_ = std::atoi(rex::cvar::GetFlagByName("max_fps").c_str());
     SetGameInputBlocked(true);
   }
   ~SettingsDialog() override { SetGameInputBlocked(false); }
@@ -186,7 +192,8 @@ class SettingsDialog final : public rex::ui::ImGuiDialog {
   bool mouse_look_ = true;
   float sensitivity_ = 1.0f;
   bool fullscreen_ = false;
-  bool vsync_ = true;
+  bool vsync_ = false;
+  int max_fps_ = 0;
   std::string listen_flag_;
   int listen_slot_ = -1;
   bool armed_ = false;         // all keys released since listening started
@@ -264,7 +271,8 @@ void SettingsDialog::RestoreDefaults() {
   mouse_look_ = DefaultFor("mnk_mouse") == "true";
   sensitivity_ = 1.0f;
   fullscreen_ = false;
-  vsync_ = true;
+  vsync_ = false;
+  max_fps_ = 0;
   status_ = "Defaults restored. Save to keep them.";
 }
 
@@ -298,7 +306,9 @@ bool WriteOwnedSettings(const std::filesystem::path& path, const std::map<std::s
     line = render(it->first, it->second);
     pending.erase(it);
   }
-  if (lines.empty()) lines.push_back("# bf3 settings (PC SETTINGS screen writes keybind_*, mnk_*, fullscreen, vsync)");
+  if (lines.empty()) {
+    lines.push_back("# bf3 settings (PC SETTINGS screen writes keybind_*, mnk_*, fullscreen, present_vsync, max_fps)");
+  }
   for (const auto& [flag, value] : pending) lines.push_back(render(flag, value));
   std::ofstream out(path, std::ios::trunc);
   for (const std::string& line : lines) out << line << '\n';
@@ -311,7 +321,10 @@ void SettingsDialog::Save() {
   values["mnk_mouse"] = mouse_look_ ? "true" : "false";
   values["mnk_sensitivity"] = fmt::format("{:.2f}", sensitivity_);
   values["fullscreen"] = fullscreen_ ? "true" : "false";
-  values["vsync"] = vsync_ ? "true" : "false";
+  values["present_vsync"] = vsync_ ? "true" : "false";
+  values["max_fps"] = std::to_string(max_fps_);
+  // Older versions of this screen saved the guest vblank flag here; it now always runs unthrottled (pc_input.cpp).
+  values["vsync"] = "false";
   {
     std::unique_lock lock(InputLock());
     for (const auto& [flag, value] : values) {
@@ -407,8 +420,20 @@ void SettingsDialog::DrawDisplay(float scale) {
   ImGui::Dummy(ImVec2(0, 8 * scale));
   ImGui::TextColored(kOrangeV, "DISPLAY");
   ImGui::Checkbox("Fullscreen", &fullscreen_);
-  ImGui::Checkbox("Vertical sync", &vsync_);
+  ImGui::Checkbox("Vertical sync (no tearing)", &vsync_);
+  ImGui::Dummy(ImVec2(0, 6 * scale));
+  ImGui::TextUnformatted("Frame rate limit (in game)");
+  static constexpr int kLimits[] = {0, 30, 60, 75, 120, 144, 165, 240};
+  auto label = [](int fps) { return fps ? std::to_string(fps) + " FPS" : std::string("Unlimited"); };
+  ImGui::SetNextItemWidth(260 * scale);
+  if (ImGui::BeginCombo("##max_fps", label(max_fps_).c_str())) {
+    for (int fps : kLimits) {
+      if (ImGui::Selectable(label(fps).c_str(), fps == max_fps_)) max_fps_ = fps;
+    }
+    ImGui::EndCombo();
+  }
   ImGui::Dummy(ImVec2(0, 10 * scale));
+  ImGui::TextColored(kTextDim, "Menus and loading screens run at 30 FPS like the console.");
   ImGui::TextColored(kTextDim, "Brightness and HUD placement are in the game's OPTIONS > VIDEO screen.");
 }
 

@@ -50,34 +50,70 @@ std::vector<Region> Regions() {
   return out;
 }
 
+// Occurrences of text (n bytes incl. its NUL, NUL-delimited) in [begin, end), up to `cap` offsets. Other threads
+// may decommit or protect pages after Regions() looked, so a fault ends the scan of this region (returns -1).
+int ScanRegionForString(const uint8_t* begin, const uint8_t* end, const char* text, size_t n, uint32_t* out,
+                        int cap) {
+  int count = 0;
+  __try {
+    for (const uint8_t* p = begin; p + n <= end;) {
+      p = static_cast<const uint8_t*>(std::memchr(p, text[0], size_t(end - p)));
+      if (!p || p + n > end) break;
+      if (std::memcmp(p, text, n) == 0 && (p == begin || p[-1] == 0) && count < cap) {
+        out[count++] = uint32_t(p - begin);
+      }
+      ++p;
+    }
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return -1;
+  }
+  return count;
+}
+
 // Guest addresses of NUL-delimited occurrences of `text` (including its terminator).
 std::vector<uint32_t> FindStrings(uint8_t* base, const std::vector<Region>& regions, const char* text) {
   std::vector<uint32_t> out;
   const size_t n = std::strlen(text) + 1;
+  uint32_t hits[64];
   for (const Region& r : regions) {
-    const uint8_t* begin = base + r.begin;
-    const uint8_t* end = base + r.end;
-    for (const uint8_t* p = begin; p + n <= end;) {
-      p = static_cast<const uint8_t*>(std::memchr(p, text[0], size_t(end - p)));
-      if (!p || p + n > end) break;
-      if (std::memcmp(p, text, n) == 0 && (p == begin || p[-1] == 0)) out.push_back(uint32_t(p - base));
-      ++p;
-    }
+    const int count = ScanRegionForString(base + r.begin, base + r.end, text, n, hits, 64);
+    for (int i = 0; i < count; ++i) out.push_back(r.begin + hits[i]);
   }
   return out;
+}
+
+// Guest offsets (4-aligned, relative to begin) of big-endian words equal to one of targets[0..ntargets), up to cap.
+// Faults end the scan like ScanRegionForString.
+int ScanRegionForPointers(const uint8_t* begin, const uint8_t* end, const uint32_t* targets, size_t ntargets,
+                          uint32_t* out, int cap) {
+  int count = 0;
+  __try {
+    for (const uint8_t* p = begin; p + 4 <= end && count < cap; p += 4) {
+      const uint32_t v = _byteswap_ulong(*reinterpret_cast<const uint32_t*>(p));
+      if (v < kHeapBegin || v >= kHeapEnd) continue;
+      for (size_t i = 0; i < ntargets; ++i) {
+        if (targets[i] == v) {
+          out[count++] = uint32_t(p - begin);
+          break;
+        }
+      }
+    }
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return -1;
+  }
+  return count;
 }
 
 // Guest addresses (4-aligned) holding a big-endian pointer to one of `targets`.
 std::vector<uint32_t> FindPointers(uint8_t* base, const std::vector<Region>& regions,
                                    const std::vector<uint32_t>& targets) {
   std::vector<uint32_t> out;
+  if (targets.empty()) return out;
+  uint32_t hits[64];
   for (const Region& r : regions) {
-    for (uint32_t a = (r.begin + 3) & ~3u; a + 4 <= r.end; a += 4) {
-      const uint32_t v = REX_LOAD_U32(a);
-      if (v >= kHeapBegin && v < kHeapEnd && std::find(targets.begin(), targets.end(), v) != targets.end()) {
-        out.push_back(a);
-      }
-    }
+    const uint32_t begin = (r.begin + 3) & ~3u;
+    const int count = ScanRegionForPointers(base + begin, base + r.end, targets.data(), targets.size(), hits, 64);
+    for (int i = 0; i < count; ++i) out.push_back(begin + hits[i]);
   }
   return out;
 }

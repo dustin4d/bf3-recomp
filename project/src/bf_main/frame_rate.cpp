@@ -1,13 +1,17 @@
 // Frame rate limit. The main loop's frame wait sub_83838CF0(timer r3, ..., f1 = minimum frame time in seconds) sleeps
 // (KeDelayExecutionThread via sub_838D14C0) until the time accumulated at timer+0x50 reaches f1; the console build
-// passes 1/30 s. While playing (HudScreen on the UI stack) the limit is lifted: BF3_MAX_FPS=<n> caps at n, 0 or unset
-// = no limit, 30 keeps the console behavior;
+// passes 1/30 s. While playing (HudScreen on the UI stack) the limit is the max_fps flag (PC SETTINGS > DISPLAY;
+// 0 = no limit, 30 = the console behavior), or BF3_MAX_FPS=<n> if set (tests);
 // loading and the menus keep 30: without the limit, boot and level loads hit timing races (a CPU-released GPU sync
 // slot of sub_82FD6968 never released -> WAIT_REG_MEM forever; texture binds of half-built textures).
 
 #include "bf3_pch.h"
 
+#include <rex/cvar.h>
+
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <string_view>
 
@@ -23,6 +27,37 @@ bool Playing() {
   return list.find("HudScreen") != std::string_view::npos && list.find("Spawn") == std::string_view::npos &&
          list.find("Loading") == std::string_view::npos;
 }
+
+// Logs the frame rate every 5 s while playing: frames, average and worst frame time (stutter).
+void CountFrame(bool playing) {
+  using clock = std::chrono::steady_clock;
+  static clock::time_point window_start, last;
+  static int frames = 0;
+  static double worst_ms = 0.0;
+  const auto now = clock::now();
+  if (!playing) {
+    frames = 0;
+    last = {};
+    return;
+  }
+  if (last == clock::time_point{}) {
+    window_start = last = now;
+    worst_ms = 0.0;
+    return;
+  }
+  const double ms = std::chrono::duration<double, std::milli>(now - last).count();
+  last = now;
+  worst_ms = std::max(worst_ms, ms);
+  ++frames;
+  const double window_s = std::chrono::duration<double>(now - window_start).count();
+  if (window_s >= 5.0) {
+    REXLOG_INFO("frame rate: {:.1f} fps, avg {:.2f} ms, worst {:.1f} ms", frames / window_s, 1000.0 * window_s / frames,
+                worst_ms);
+    window_start = now;
+    frames = 0;
+    worst_ms = 0.0;
+  }
+}
 }  // namespace
 
 extern "C" REX_FUNC(sub_83838CF0) {
@@ -30,11 +65,17 @@ extern "C" REX_FUNC(sub_83838CF0) {
   if (logs.fetch_add(1) < 3) {
     REXLOG_INFO("frame rate: frame wait min {:.5f} s (lr {:08X})", ctx.f1.f64, static_cast<uint32_t>(ctx.lr));
   }
-  static const double max_fps = [] {
-    const char* v = std::getenv("BF3_MAX_FPS");
-    return v && *v ? std::atof(v) : 0.0;
-  }();
-  if (max_fps >= 0.0 && Playing()) {
+  static const char* env_max_fps = std::getenv("BF3_MAX_FPS");
+  static double max_fps = 0.0;
+  static int refresh = 0;
+  if (refresh-- <= 0) {  // the flag can change in PC SETTINGS; a string lookup every frame isn't needed
+    refresh = 30;
+    max_fps = env_max_fps && *env_max_fps ? std::atof(env_max_fps)
+                                          : std::atof(rex::cvar::GetFlagByName("max_fps").c_str());
+  }
+  const bool playing = Playing();
+  CountFrame(playing);
+  if (max_fps >= 0.0 && playing) {
     ctx.f1.f64 = max_fps == 0.0 ? 0.0 : 1.0 / max_fps;
   }
   __imp__sub_83838CF0(ctx, base);

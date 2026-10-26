@@ -55,6 +55,7 @@ class Bf3App : public rex::ReXApp {
   }
 
   void OnPostSetup() override {
+    bf3::ApplyPcDisplayDefaults();
     bf3::InstallPadInject();
     bf3::InstallAudioCapture();
     bf3::InstallKernelFixes();

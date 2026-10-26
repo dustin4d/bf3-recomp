@@ -14,6 +14,8 @@ import re
 import subprocess
 import sys
 
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 
 def load_map(path):
     """Parse an MSVC-style map (lld-link /MAP): ' 0001:0005a3b0  sym  000000014005b3b0  obj'."""
@@ -71,7 +73,11 @@ def main(build_dir, log_path):
         key = module.lower()
         if key not in tables:
             stem = os.path.splitext(module)[0]
-            map_path = os.path.join(build_dir, stem + ".map")
+            # Our rebuilt runtime and GPU plugin replace the stock DLLs at deploy (scripts/win_deploy.sh).
+            map_dirs = [build_dir, os.path.join(ROOT, "tools/rexglue-src/out/win-amd64"),
+                        os.path.join(ROOT, "gpu_plugin/build")]
+            map_path = next((p for p in (os.path.join(d, stem + ".map") for d in map_dirs) if os.path.exists(p)),
+                            os.path.join(build_dir, stem + ".map"))
             dll_path = next((os.path.join(build_dir, f) for f in os.listdir(build_dir) if f.lower() == key), None)
             if os.path.exists(map_path):
                 tables[key] = load_map(map_path)

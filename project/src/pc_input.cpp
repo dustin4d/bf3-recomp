@@ -70,4 +70,17 @@ void ApplyPcInputDefaults() {
               rex::cvar::GetFlagByName("keybind_a"));
 }
 
+// The emulated guest vblank (vsync) runs at 1 kHz: BF3 presents every 2nd vblank, so a 60 Hz vblank holds it at
+// 30 FPS. The game's own frame wait (bf_main/frame_rate.cpp, max_fps) paces it instead, and present_vsync syncs the
+// host display. Only a command-line --vsync=true brings back the console pacing. The flag belongs to the GPU plugin,
+// so this runs after setup.
+void ApplyPcDisplayDefaults() {
+  if (rex::cvar::GetFlagSource("vsync") != rex::cvar::Source::kCommandLine &&
+      !rex::cvar::SetFlagByName("vsync", "false")) {
+    REXLOG_WARN("pc_input: could not set vsync = false");
+  }
+  REXLOG_INFO("pc_input: guest vsync={} present_vsync={} max_fps={}", rex::cvar::GetFlagByName("vsync"),
+              rex::cvar::GetFlagByName("present_vsync"), rex::cvar::GetFlagByName("max_fps"));
+}
+
 }  // namespace bf3

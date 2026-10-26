@@ -53,6 +53,23 @@ and GhidraMCP.
   lowercase). New patches: scripts/rexglue_patch.sh <name> writes the changes not yet in patches/ to the next file.
   Patch 0001 = precise memexport readback (cvar `readback_memexport_precise`, default on). Patch 0002 =
   16-bit integer resolves, integer texture fetch, small-resolve readback, GPU frame tracer, slow WAIT_REG_MEM log.
+  Patch 0003 = dual-source alpha on fixed16 RTs. Patch 0004 = deferred memexport readback (plugin). Patch 0005 =
+  runtime: `present_vsync` (host DXGI vsync) and SDL audio output stats.
+- **Runtime built from source** (2026-10-25): `rexruntime.dll` from the same tree replaces the prebuilt one at deploy
+  (`scripts/win_deploy.sh`; `REX_STOCK_RUNTIME=1` deploys the SDK's). All 558 symbols the exe/DLLs/plugin import are
+  exported, same DLL dependencies (WINDOWS_EXPORT_ALL_SYMBOLS), so it's drop-in. Submodules fetched with
+  `git submodule update --init --depth 1` for cli11 libmspack FFmpeg tomlplusplus simde xxHash spdlog fmt utfcpp imgui
+  sdl3 tracy o1heap inja (not vulkan/glslang/spirv/moltenvk/catch2). Build (~3 min first time, map written next to it):
+  ```bash
+  R=$PWD/tools/rexglue-src
+  cmake -S $R -B $R/out/win-cross -G Ninja -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_TOOLCHAIN_FILE=$PWD/tools/cross/win-amd64-xwin-sdk.cmake > logs/rexruntime-configure.log
+  cmake --build $R/out/win-cross --target rexruntime -j12 > logs/rexruntime-build.log   # -> $R/out/win-amd64/
+  ```
+  `win-amd64-xwin-sdk.cmake` = the project toolchain + llvm-ar (FFmpeg/SDL archives use `ar qc`), -march=x86-64-v2,
+  `-I` RC flags (cmake_llvm_rc preprocesses with clang), `/MAP`. Passing CMAKE_C_FLAGS on the command line drops the
+  toolchain's xwin include dirs (errno.h not found): put flags in the toolchain file. `scripts/resolve_rva.py` also
+  looks for maps in `tools/rexglue-src/out/win-amd64` and `gpu_plugin/build`.
 - GhidraMCP: reachable from WSL (mirrored networking). Next phase: import `dump/Disc 1/game/Default.xex` and
   `BF.Main.xex` (then BF.Splash, Engine.BuildInfo) with XEXLoaderWV, confirm image md5s/bases above with
   `get_program_info`, then find how the launcher loads the DLL modules (XexLoadImage / XexLoadExecutable imports).
@@ -169,6 +186,9 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
 | GPU plugin: blending on full-range fixed16 RTs | patches/rexglue/0003: when RT0 is k_16_16(_16_16) (host RTV path, full range) and its blend uses SRC_ALPHA / INV_SRC_ALPHA, the pixel shader also writes the unscaled alpha to SV_Target1 and those factors become SRC1_ALPHA / INV_SRC1_ALPHA (modification pixel.dual_source_alpha) | The full -32..32 range is emulated by dividing the output by 32, which also divided the blend factor: BF3's half-res particle buffer (premultiplied ONE / INV_SRC_ALPHA) accumulated alpha up to 8 instead of 1, and the per-16x16-tile particle composite (tile mask R40 96x44, stencil-marked point sprites, sub-pass D3884 overwrites "opaque" tiles) pasted dark or white blocks over smoke |
 | BF.Main mfmsr/mtmsrd (every lwarx/stwcx. bracket) | manifest `skip_msr = true` in BF.Main's [[modules]] | Emulated as ReXGlue's process-wide global_critical_region mutex (REX_ENTER/LEAVE_GLOBAL_LOCK), which serialized the job system; atomics are CAS anyway and on hardware the bracket only masks local interrupts. Gameplay 38 -> 56 fps uncapped |
 | BF.Main frame wait sub_83838CF0 (f1 = min frame time, 1/30) | `src/bf_main/frame_rate.cpp`: f1 = 1/BF3_MAX_FPS (default unlimited) while HudScreen is up; menus/loading keep 30 | Unbounded FPS request; uncapped boot/loading hit races (texture bind of a half-built texture sub_8313C6E0 from sub_83D21C50 -> guarded: bind none; GPU sync slot of sub_82FD6968 never released -> WAIT_REG_MEM 0x11A97xxx forever) |
+| GPU plugin: memexport readback stalls (patch 0004) | cvar `readback_memexport_deferred` (default on): before/after copies go to pooled readback buffers and the submission is kicked; the changed bytes are applied when the fence passes (polled at each draw/resolve), or blocking only when the guest can observe progress: a WAIT_REG_MEM that would actually wait, INTERRUPT, XE_SWAP, COND_WRITE, ZPD, CP idle. Fence/memory writes (EVENT_WRITE_SHD, MEM_WRITE, REG_TO_MEM, read pointer write-back) are queued behind pending readbacks instead of stalling. A pending range the CPU modifies (shared memory page no longer valid) is re-invalidated after its bytes land | Metro: 4 memexport draws per frame (job heap 11AA0000 size 0x60000 ~3 B/frame changed; 1E95E000/1E995000/1E9CC000 size 0x37000 ~700 B/frame), each waited for the whole host GPU queue: GPU thread blocked 357 ms/s. Now 62 ms/s; gameplay 64 -> 74 fps |
+| Guest vblank pacing | `pc_input.cpp` ApplyPcDisplayDefaults (OnPostSetup: the `vsync` cvar is the GPU plugin's): guest `vsync` = false unless given on the command line; PC SETTINGS DISPLAY: "Vertical sync (no tearing)" = `present_vsync` (patch 0005), "Frame rate limit" = `max_fps` (read by bf_main/frame_rate.cpp; BF3_MAX_FPS still overrides) | BF3 swaps every 2nd vblank; ReXGlue's 60 Hz guest vblank held gameplay at exactly 30.0 fps regardless of the frame wait. With vsync=false the vblank runs at 1 kHz and WAIT_REG_MEM yields instead of sleeping. Old configs' `vsync = true` is overwritten on the next PC SETTINGS save |
+| bf_main/main_menu.cpp FindStrings/FindPointers | scans moved into SEH-guarded helpers (`__try`/`__except`) | Uncapped vblank changed timing: a page (guest 0x4F1D1000) became unreadable between Regions() and the scan -> "Unhandled guest access violation" at the MainMenuScreen push, process exit 5 |
 | BF.Main FadeManager (0x840BAE54) fade in sub_83247D38 | `src/bf_main/fade_fix.cpp`: if a FadeEntity's StartFaded (sub_83247E10, name 0x82DCF6C0) isn't followed by a fade in within 5 s, fade in (1 s) from the level manager update (level_boot.cpp sub_833AF040) | In MP levels started from PRACTICE the level's FadeEntity never gets its FadeIn event: the color grading LUT job (sub_83C8EB28, matrix from sub_83D1B078) used an all-zero matrix and the UI was faded too, so the screen stayed black |
 | BF.Main server team (ServerPlayer::setTeam sub_833CACD0, team at player+0x324) | `src/bf_main/practice.cpp`: the player that entered the level (ServerPlayerEnteredLevelMessage +0x28, seen in the dispatcher sub_83026CB8) gets team 1 (BF3_TEAM=2: RU) when the spawn screen appears; the server's network handler sub_836C7AA0 also applies NetworkSelectTeamMessage (+0x38) | Without a Blaze game nobody assigns a team: the player stays TeamNeutral, the spawn screen shows ID_M_NEUTRAL / "DEPLOY AS undefined" / kitItem_N and DEPLOY does nothing. sub_836C7AA0 ignores NetworkSelectTeamMessage in this build |
 | BF.Main ServerPreRoundEntity (type 0x8418958C, check sub_837D3BE0) | `src/bf_main/practice.cpp` SoloRound: at the spawn screen, every pre-round entity gets data +0x60/+0x6C = 1 and its copies +0xA4 = 1 (start players), +0xA8 = 0 (restart players), and the round starts (+0xB4 = +0xAC, +0xB8 |= 0x80, sub_83838328(entity, 1)) | TDM needs 8 players before the round starts; in pre-round the soldier can turn but not walk or fire |
@@ -357,7 +377,17 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
   (2026-10-25): steady ~188 frames/s, no frame-boundary discontinuities, repeats or dropouts; FL/FR/BL/BR carry the
   mix, FC and LFE are always 0. Output stage (rexruntime SDL driver): 6 ch to an 8 ch Realtek endpoint.
   XMA: "write to unknown register 0x601" ~400/s (Xenia logs it too).
-- Performance (2026-10-25, Metro gameplay, RX 7800 XT): GPU thread mostly idle; main thread waits on jobs
+  SDL output stats (patch 0005, "audio:" every 5 s): Metro gameplay at 30 and 74 fps: 100 callbacks/s, 187.5 frames/s
+  played (= 48 kHz), 0 silence fills, queue always full (8 of audio_maxqframes 8); underruns only in the first ~2 s.
+  Endpoint 'Speakers (Realtek(R) Audio)' 8 ch 48 kHz F32. Game mix (capture) peaks 0.70, no clipping, ~1 transient/s.
+  So the output path isn't dropping or stretching anything in gameplay; the user's crackle/pitch report likely predates
+  skip_msr (global-lock contention starved the audio worker then). Not yet re-checked by ear.
+- Performance 2026-10-25 evening (rebuilt runtime, patch 0004, guest vsync off): Metro gameplay ~74 fps (avg 13.5 ms,
+  worst ~20 ms), logged every 5 s as "frame rate:" (bf_main/frame_rate.cpp, only while playing). With the runtime's
+  object-table lock no longer dominant (skip_msr), thread samples show the GPU command-processor thread as the one
+  that's never idle: memexport readbacks (fixed), UploadRanges, render target transfers. `scripts/metro_play.sh
+  [secs] [args]` = PRACTICE -> Metro TDM, auto deploy, prints frame rate / audio / memexport lines.
+- Performance (2026-10-25, Metro gameplay, RX 7800 XT, before the above): GPU thread mostly idle; main thread waits on jobs
   (sub_83007B50 in client update sub_831FDC08); job workers spend much time in NtSetEvent (jobs signalling
   completion via sub_838D16A8) and ObjectTable::LookupObject, both on rexruntime's global_critical_region mutex.
   Next step for more FPS: a runtime with a finer object-table lock (rexruntime is prebuilt; source in tools/rexglue-src).

@@ -1,0 +1,107 @@
+diff --git a/include/rex/audio/sdl/sdl_audio_driver.h b/include/rex/audio/sdl/sdl_audio_driver.h
+index f8949ca..6d14a72 100644
+--- a/include/rex/audio/sdl/sdl_audio_driver.h
++++ b/include/rex/audio/sdl/sdl_audio_driver.h
+@@ -49,6 +49,9 @@ class SDLAudioDriver : public AudioDriver {
+   std::queue<float*> frames_queued_ = {};
+   std::stack<float*> frames_unused_ = {};
+   std::mutex frames_mutex_ = {};
++  // Output statistics (callback thread only).
++  uint32_t stat_frames_ = 0, stat_silence_ = 0;
++  uint64_t stat_asked_ = 0;
+ };
+ 
+ }  // namespace rex::audio::sdl
+diff --git a/src/audio/sdl/sdl_audio_driver.cpp b/src/audio/sdl/sdl_audio_driver.cpp
+index 20a2cd8..1b1f8f4 100644
+--- a/src/audio/sdl/sdl_audio_driver.cpp
++++ b/src/audio/sdl/sdl_audio_driver.cpp
+@@ -11,6 +11,7 @@
+ 
+ #include <algorithm>
+ #include <array>
++#include <chrono>
+ #include <cstring>
+ 
+ #include <rex/assert.h>
+@@ -178,6 +179,34 @@ void SDLAudioDriver::SDLCallback(void* userdata, SDL_AudioStream* stream, int ad
+   const StereoFold fold = GetStereoFold();
+   const SurroundMix mix = GetSurroundMix();
+   const float gain = GetOutputGain();
++  {
++    // Output health, logged every 5 s: callbacks, frames played, silence fills (underruns), queue depth.
++    static std::chrono::steady_clock::time_point window_start;
++    static uint32_t callbacks = 0, min_depth = UINT32_MAX, max_depth = 0;
++    std::unique_lock<std::mutex> guard(driver->frames_mutex_);
++    const uint32_t depth = static_cast<uint32_t>(driver->frames_queued_.size());
++    guard.unlock();
++    ++callbacks;
++    min_depth = std::min(min_depth, depth);
++    max_depth = std::max(max_depth, depth);
++    const auto now = std::chrono::steady_clock::now();
++    if (window_start == std::chrono::steady_clock::time_point{}) {
++      window_start = now;
++    } else if (now - window_start >= std::chrono::seconds(5)) {
++      const double secs = std::chrono::duration<double>(now - window_start).count();
++      REXAPU_INFO("audio: {:.0f} callbacks/s, {:.1f} frames/s played, {:.1f} silence fills/s, queue {}..{} frames, "
++                  "asked {:.0f} B/callback",
++                  callbacks / secs, driver->stat_frames_ / secs, driver->stat_silence_ / secs, min_depth, max_depth,
++                  driver->stat_asked_ / std::max(1.0, double(callbacks)));
++      callbacks = 0;
++      min_depth = UINT32_MAX;
++      max_depth = 0;
++      driver->stat_frames_ = driver->stat_silence_ = 0;
++      driver->stat_asked_ = 0;
++      window_start = now;
++    }
++    driver->stat_asked_ += additional_amount;
++  }
+   while (additional_amount > 0) {
+     static uint32_t sdl_callback_count = 0;
+     std::unique_lock<std::mutex> guard(driver->frames_mutex_);
+@@ -186,6 +215,7 @@ void SDLAudioDriver::SDLCallback(void* userdata, SDL_AudioStream* stream, int ad
+         REXAPU_DEBUG("SDLCallback: no frames queued (silence)");
+         sdl_callback_count++;
+       }
++      ++driver->stat_silence_;
+       std::memset(data, 0, len);
+       if (!SDL_PutAudioStreamData(stream, data, len)) {
+         REXAPU_ERROR("SDL_PutAudioStreamData() failed while filling silence: {}", SDL_GetError());
+@@ -195,6 +225,7 @@ void SDLAudioDriver::SDLCallback(void* userdata, SDL_AudioStream* stream, int ad
+     } else {
+       auto buffer = driver->frames_queued_.front();
+       driver->frames_queued_.pop();
++      ++driver->stat_frames_;
+       if (REXCVAR_GET(audio_mute)) {
+         std::memset(data, 0, len);
+       } else {
+diff --git a/src/ui/d3d12/d3d12_presenter.cpp b/src/ui/d3d12/d3d12_presenter.cpp
+index 306118e..b54ab9c 100644
+--- a/src/ui/d3d12/d3d12_presenter.cpp
++++ b/src/ui/d3d12/d3d12_presenter.cpp
+@@ -33,6 +33,11 @@
+ REXCVAR_DEFINE_BOOL(d3d12_allow_variable_refresh_rate_and_tearing, true, "UI/D3D12",
+                     "Allow variable refresh rate and tearing");
+ 
++REXCVAR_DEFINE_BOOL(present_vsync, false, "UI/Presenter",
++                    "Wait for the display's vertical blank when presenting (no tearing). Independent of the "
++                    "emulated guest vblank (vsync), which paces the game itself")
++    .lifecycle(rex::cvar::Lifecycle::kHotReload);
++
+ namespace rex::ui::d3d12 {
+ 
+ // Generated with `xb buildshaders`.
+@@ -1155,9 +1160,11 @@ Presenter::PaintResult D3D12Presenter::PaintAndPresentImpl(bool execute_ui_drawe
+   // fullscreen is ever used in, the allow tearing flag must not be passed in
+   // fullscreen, but DXGI fullscreen is largely unneeded with the flip
+   // presentation model used in Direct3D 12).
++  const bool present_vsync = REXCVAR_GET(present_vsync);
+   HRESULT present_result = paint_context_.swap_chain->Present(
+-      0, DXGI_PRESENT_RESTART |
+-             (paint_context_.swap_chain_allows_tearing ? DXGI_PRESENT_ALLOW_TEARING : 0));
++      present_vsync ? 1 : 0,
++      DXGI_PRESENT_RESTART |
++          (!present_vsync && paint_context_.swap_chain_allows_tearing ? DXGI_PRESENT_ALLOW_TEARING : 0));
+   // Even if presentation has failed, work might have been enqueued anyway
+   // internally before the failure according to Jesse Natalie from the DirectX
+   // Discord server.
