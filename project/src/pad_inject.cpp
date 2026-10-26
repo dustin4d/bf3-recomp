@@ -118,7 +118,7 @@ void ParseScript(const std::string& script) {
 
 // __imp__XamInputGetState(user_index r3, flags r4, X_INPUT_STATE* r5): packet_number u32, buttons u16, lt u8, rt u8,
 // thumbs 4 x s16, all big-endian.
-void HookedXamInputGetState(PPCContext& ctx, uint8_t* base) {
+void ControllerState(PPCContext& ctx, uint8_t* base) {
   const uint32_t user = ctx.r3.u32;
   const uint32_t state = ctx.r5.u32;
   {
@@ -206,6 +206,32 @@ void HookedXamInputGetState(PPCContext& ctx, uint8_t* base) {
       p[8 + a * 2] = uint8_t(uint16_t(thumbs[a]) >> 8);
       p[9 + a * 2] = uint8_t(thumbs[a]);
     }
+  }
+}
+
+// The PRACTICE page (DevScreen, bf_main/practice_menu.cpp): left/right (D-pad, left stick across, the keyboard's
+// arrows) would move the focus into its emptied columns and drop the highlight, so they are masked. When the map is
+// chosen the DLL asks once (bf3_practice_take_focus_team) for the focus to move to the team column: Right is held for
+// a moment.
+void HookedXamInputGetState(PPCContext& ctx, uint8_t* base) {
+  static uint64_t right_until = 0;
+  const uint32_t user = ctx.r3.u32, state = ctx.r5.u32;
+  ControllerState(ctx, base);
+  if (user != 0 || !state || ctx.r3.u32 != 0 || ui_state::TopScreen() != "DevScreen") return;
+  using TakeFn = int (*)();
+  static TakeFn take_focus = [] {
+    HMODULE module = GetModuleHandleW(L"bf3_BF_Main.dll");
+    return module ? reinterpret_cast<TakeFn>(GetProcAddress(module, "bf3_practice_take_focus_team")) : nullptr;
+  }();
+  const uint64_t now = GetTickCount64();
+  if (take_focus && take_focus()) right_until = now + 120;
+  uint8_t* p = base + state;
+  p[5] &= uint8_t(~0x0C);  // LEFT, RIGHT (low byte of the big-endian buttons)
+  p[8] = p[9] = 0;         // left stick X
+  if (now < right_until) {
+    p[5] |= 0x08;
+    const uint32_t packet = g_packet.fetch_add(1);
+    p[0] = uint8_t(packet >> 24), p[1] = uint8_t(packet >> 16), p[2] = uint8_t(packet >> 8), p[3] = uint8_t(packet);
   }
 }
 

@@ -24,7 +24,6 @@ set(BF3_SOURCES
     src/pc_mouse.cpp
     src/local_profile.cpp
     src/pc_settings.cpp
-    src/pc_practice.cpp
     src/audio_capture.cpp
 )
 
@@ -46,6 +45,7 @@ if(TARGET bf3_BF_Main)
         src/bf_main/lut_trace.cpp
         src/bf_main/fade_fix.cpp
         src/bf_main/practice.cpp
+        src/bf_main/practice_menu.cpp
         src/bf_main/frame_rate.cpp
         src/bf_main/mouse_aim.cpp
         src/bf_main/lua_dump.cpp

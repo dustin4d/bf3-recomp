@@ -442,7 +442,7 @@ extern "C" REX_FUNC(sub_833AF040) {
   __imp__sub_833AF040(ctx, base);
 }
 
-// Read by bf3.exe (pc_practice.cpp): switch the running local server to a multiplayer level,
+// Exported for host tools: switch the running local server to a multiplayer level,
 // "<level>[:<category>=<value>]" (e.g. "Levels/MP_001/MP_001:GameMode=ConquestLarge0").
 extern "C" __declspec(dllexport) void bf3_practice_launch(const char* spec) {
   if (!spec || !*spec) return;
@@ -455,8 +455,11 @@ extern "C" __declspec(dllexport) void bf3_practice_launch(const char* spec) {
 // hands them to sub_837E29A0, which stops the server and starts a new one on the level. The PRACTICE menu (the dev
 // screen, see main_menu.cpp) uses it. The client can't connect while that new server loads (its connection drops
 // after ~7 s and the game returns to the menu), so multiplayer levels are switched in place on the running server
-// instead, as BF3_LEVEL does, in Team Deathmatch; other levels take the engine's path.
+// instead, as BF3_LEVEL does, in Team Deathmatch; other levels take the engine's path. From the PRACTICE page
+// (practice_menu.cpp) it picks the map, then the team, then launches Metro TDM.
 REX_EXTERN(__imp__sub_836EE268);
+bool PracticePageUp();                                                         // practice_menu.cpp
+int PracticeMenuChoose(PPCContext& ctx, uint8_t* base, const std::string& index);  // practice_menu.cpp
 
 extern "C" REX_FUNC(sub_836EE268) {
   std::string level;
@@ -465,6 +468,13 @@ extern "C" REX_FUNC(sub_836EE268) {
     if (array && REX_LOAD_U32(array - 4) > 0) {
       if (const uint32_t name = REX_LOAD_U32(array)) level = reinterpret_cast<const char*>(REX_RAW_ADDR(name));
     }
+  }
+  if (PracticePageUp()) {
+    if (PracticeMenuChoose(ctx, base, level)) {
+      REXLOG_INFO("practice: Operation Metro, Team Deathmatch (switched in place on the local server)");
+      RequestLevel("Levels/MP_Subway/MP_Subway:GameMode=TeamDeathMatch0");
+    }
+    return;
   }
   std::string lower = level;
   for (char& c : lower) c = char(std::tolower(static_cast<unsigned char>(c)));

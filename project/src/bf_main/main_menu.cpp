@@ -11,6 +11,10 @@
 // - every "ID_M_EXTRA" string is renamed "EXIT" (an ID without a localization shows as-is), item and port alike;
 // and when ExtraMenuScreen is pushed (EXIT selected), the game's quit flag (0x84091C34, read by the main loop
 // sub_82FE9E18) is raised so the game shuts down normally.
+//
+// PRACTICE opens DICE's DevScreen, shaped into the PRACTICE page (practice_menu.cpp). On each DevScreen push its page
+// header's StaticSubHeader "DEVELOPER MENU" is renamed "PRACTICE", and its MENU SHORTCUTS list (List_04: StaticItems
+// MAIN MENU PC, MAIN MENU CONSOLE, SID SCREEN, ...) is emptied (count at -4 set to 0).
 
 // Compiled into the bf3_BF_Main DLL (see CMakeLists.txt): bf3_pch.h is generated/bf_main/bf3_pch.h.
 #include "bf3_pch.h"
@@ -164,6 +168,22 @@ void PatchMainMenu(uint8_t* base) {
               removed, renamed, unhidden);
 }
 
+void PatchPracticePage(uint8_t* base) {
+  const std::vector<Region> regions = Regions();
+  int renamed = 0, emptied = 0;
+  for (uint32_t s : FindStrings(base, regions, "DEVELOPER MENU")) {
+    std::memcpy(REX_RAW_ADDR(s), "PRACTICE\0\0\0\0\0\0", 15);
+    ++renamed;
+  }
+  for (uint32_t item : FindPointers(base, regions, FindStrings(base, regions, "MAIN MENU PC"))) {
+    if (NameAt(base, item + kItemSize) != "MAIN MENU CONSOLE") continue;  // the list, not the flow port
+    if (REX_LOAD_U32(item - 4) == 0 || REX_LOAD_U32(item - 4) > 16) continue;
+    REX_STORE_U32(item - 4, 0);
+    ++emptied;
+  }
+  REXLOG_INFO("practice page: header renamed in {} place(s), shortcut list emptied in {}", renamed, emptied);
+}
+
 }  // namespace
 
 // From the screen push hook (ui_screens.cpp), before the screen is built.
@@ -173,6 +193,7 @@ void bf3_main_menu_before_push(uint8_t* base, const std::string& name) {
     patched = true;
     PatchMainMenu(base);
   }
+  if (name == "DevScreen") PatchPracticePage(base);
   if (name == "ExtraMenuScreen") {  // EXIT
     REXLOG_INFO("main menu: EXIT selected, closing the game");
     REX_STORE_U32(kQuitFlag, 1);

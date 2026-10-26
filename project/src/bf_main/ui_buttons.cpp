@@ -8,11 +8,12 @@
 // The movie is zlib-compressed and parsed right after Scaleform inflates it, so the bytes are patched as they come
 // out of zlib's inflate (sub_8318B500, the only inflate in BF.Main; z_stream: +12 next_out). The tag is found by its
 // header (DefineShape, long form, 51 bytes, id 64) and the fill's matrix is re-encoded with the same bit widths, so
-// nothing else in the stream moves.
+// nothing else in the stream moves. The same hook gives the PRACTICE page its column titles (practice_menu.cpp).
 
 // Compiled into the bf3_BF_Main DLL (see CMakeLists.txt): bf3_pch.h is generated/bf_main/bf3_pch.h.
 #include "bf3_pch.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 
@@ -112,16 +113,20 @@ bool PatchStartShape(uint8_t* tag) {
 
 }  // namespace
 
+void PracticeMenuPatchMovie(uint32_t stream, uint8_t* begin, uint8_t* end, bool done);  // practice_menu.cpp
+
 // inflate(z_stream* r3, int flush r4).
 extern "C" REX_FUNC(sub_8318B500) {
   const uint32_t strm = ctx.r3.u32;
-  const uint32_t out_before = Enabled() ? REX_LOAD_U32(strm + 12) : 0;
+  const uint32_t out_before = REX_LOAD_U32(strm + 12);
   __imp__sub_8318B500(ctx, base);
   if (!out_before) return;
-  const uint32_t out_after = REX_LOAD_U32(strm + 12);
-  if (out_after <= out_before || out_after - out_before < kTagLength) return;
+  const uint32_t out_after = std::max(REX_LOAD_U32(strm + 12), out_before);
   uint8_t* begin = REX_RAW_ADDR(out_before);
   uint8_t* end = begin + (out_after - out_before);
+  const int32_t ret = ctx.r3.s32;  // Z_STREAM_END (1) or an error other than Z_BUF_ERROR (-5) ends the stream
+  PracticeMenuPatchMovie(strm, begin, end, ret == 1 || (ret < 0 && ret != -5));
+  if (!Enabled() || out_after - out_before < kTagLength) return;
   for (uint8_t* p = begin; p + kTagLength <= end;) {
     p = static_cast<uint8_t*>(std::memchr(p, kStartShapeTag[0], size_t(end - p - kTagLength + 1)));
     if (!p) break;

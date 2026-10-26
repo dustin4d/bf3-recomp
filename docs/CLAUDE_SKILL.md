@@ -195,6 +195,8 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
 | BF.Main FadeManager (0x840BAE54) fade in sub_83247D38 | `src/bf_main/fade_fix.cpp`: if a FadeEntity's StartFaded (sub_83247E10, name 0x82DCF6C0) isn't followed by a fade in within 5 s, fade in (1 s) from the level manager update (level_boot.cpp sub_833AF040) | In MP levels started from PRACTICE the level's FadeEntity never gets its FadeIn event: the color grading LUT job (sub_83C8EB28, matrix from sub_83D1B078) used an all-zero matrix and the UI was faded too, so the screen stayed black |
 | BF.Main server team (ServerPlayer::setTeam sub_833CACD0, team at player+0x324) | `src/bf_main/practice.cpp`: the player that entered the level (ServerPlayerEnteredLevelMessage +0x28, seen in the dispatcher sub_83026CB8) gets team 1 (BF3_TEAM=2: RU) when the spawn screen appears; the server's network handler sub_836C7AA0 also applies NetworkSelectTeamMessage (+0x38) | Without a Blaze game nobody assigns a team: the player stays TeamNeutral, the spawn screen shows ID_M_NEUTRAL / "DEPLOY AS undefined" / kitItem_N and DEPLOY does nothing. sub_836C7AA0 ignores NetworkSelectTeamMessage in this build |
 | BF.Main ServerPreRoundEntity (type 0x8418958C, check sub_837D3BE0) | `src/bf_main/practice.cpp` SoloRound: at the spawn screen, every pre-round entity gets data +0x60/+0x6C = 1 and its copies +0xA4 = 1 (start players), +0xA8 = 0 (restart players), and the round starts (+0xB4 = +0xAC, +0xB8 |= 0x80, sub_83838328(entity, 1)) | TDM needs 8 players before the round starts; in pre-round the soldier can turn but not walk or fire |
+| BF.Main level list filter sub_837DEC28 (data source sub_837E9F80 -> sub_837E98D0 -> sub_837E4E38); DevScreen movie via inflate sub_8318B500; LoadLevel sub_836EE268 | Native PRACTICE page: `src/bf_main/practice_menu.cpp` (while DevScreen is on top, category 3 admits only MP_Subway, 1/2 nothing; column titles rewritten in the inflated movie), `main_menu.cpp` (header DEVELOPER MENU -> PRACTICE, MENU SHORTCUTS StaticItems count 0), `level_boot.cpp` (LoadLevel from the page = Metro TDM), `pad_inject.cpp` (left/right masked on DevScreen) | Replaces the ImGui launcher drawn over DevScreen (user, 2026-10-26: native page, one mode, one map) |
+| BF.Main level data source sub_837E9F80 (key 0xB142F75C), row field setter sub_8328F408, flow output node sub_8328E558, UI manager sub_83280730 vtable +0x60 | PRACTICE team step: `src/bf_main/practice_menu.cpp` (choosing the map fills the TEAM column List_05 with US MARINES / RUSSIAN ARMY, refreshes the key, host taps Right; the team is the row last highlighted, since List_05's Release hands LoadLevel a dangling string), `pad_inject.cpp` (the Right tap) | User, 2026-10-26: team choice after the map, before loading |
 
 ## Known notes
 - Module layout: Default.xex is a small launcher; the game is in DLL-type XEX modules (imports xam/xboxkrnl).
@@ -335,7 +337,7 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
   Flow graphs: scripts/ebx_dump.py <ebx> (Xenon EBX: u32 header, instances each preceded by a GUID, arrays after
   the instance payload) and scripts/ui_graph.py <dump> <port> (follow UINodeConnections from a port).
 - PRACTICE (main menu): the hidden DEV MENU item (+0x25 ExcludeInRetail cleared, strings renamed in place) opens
-  DevScreen, DICE's level select (SP / MP / co-op). Its LoadLevel action (table 0x84016150: key 0xE9F0E7F5 ->
+  DevScreen, DICE's level select (SP / MP / co-op; now the PRACTICE page, below). Its LoadLevel action (table 0x84016150: key 0xE9F0E7F5 ->
   factory sub_836DE440 -> execute sub_836EE268(action, params: char*[] {level, mode})) restarts the server, which the
   client can't join while it loads (drops after ~7 s); MP levels are instead switched in place on the running server
   (level_boot.cpp RequestLevel, Team Deathmatch). Result: PRACTICE -> OPERATION METRO -> client ingame, TDM spawn
@@ -371,12 +373,23 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
   BFServerSettings (BFServer.RoundStartPlayerCount etc.) don't reach the pre-round entity. BF3_MSG_TRACE=2 logs the first 3
   of every message type at the dispatcher (scripts/msg_names.py names them); lr 83C529EC = client->server delivery
   on the server, 83C51AE0 = server->client delivery.
-- PRACTICE launcher (src/pc_practice.cpp, host screen): opens over DevScreen when PRACTICE is clicked. Map (the 9
-  Disc 1 MP maps), game mode (TeamDeathMatch0, SquadDeathMatch0, ConquestLarge0, RushLarge0, SquadRush0), team; LAUNCH
-  -> bf3_practice_set_team + bf3_practice_launch (DLL exports; in-place level switch). DEVELOPER MENU keeps DICE's
-  screen, BACK pulses B. BF3_PRACTICE_AUTO=<map id>:<mode>:<team> launches by itself 2 s after opening (tests).
-  Verified: Metro TDM, Grand Bazaar TDM, Metro Conquest (RU). Host screens that block game input also stop the menu
-  mouse (pad_inject GameInputBlocked).
+- PRACTICE page (2026-10-26, native; replaces the ImGui launcher src/pc_practice.cpp): DevScreen reshaped. Header
+  MAIN MENU / PRACTICE; column TEAM DEATHMATCH with one row OPERATION MÉTRO (List_01, focused on open); choosing it
+  fills column TEAM (List_05) with US MARINES / RUSSIAN ARMY and moves the focus there (a host Right tap); choosing a
+  team launches Metro TDM in place on that team. B leaves the page (reopening starts at the map). DevScreen:
+  PageHeader_01 (UIPageHeaderBinding StaticSubHeader), List_01 SP (query 0x84EE6302 -> category 3), List_03 co-op
+  (0x3CE14372 -> 1), List_04 static shortcuts, List_05 MP (0xB142F75C -> 2); column titles are DefineEditText texts
+  in its movie (ui/assets/devscreen, CFX in Levels/FrontEnd/FrontEnd.sb; static and unnamed, so they can't be shown
+  or hidden at runtime). Level descriptor: +8 name, +0xC index, +0x14 label ID, +0x18 description, +0x20
+  co-op, +0x21 hidden, +0x22 MP. Tried and dropped: renaming the NavigateLeft/Right port strings (no effect: focus
+  still moved) and renaming the empty lists' movie instances (screen stopped taking input, B did nothing).
+  Rows: fields Label (ID or raw text), Index (the value the list's events carry: the level path), Description,
+  CompletedOn, Image. Flow output node sub_8328E558(r3, node r4, event r5): event +0x70 value type (6 string), +0x68
+  char*; it becomes LoadLevel's params[0]. List_01's widget sets SendIndexWithEvent 'false'; List_05 keeps the
+  binding's true, and its Release value is then a dangling string (''), while its RowHighlighted -> SelectLevel
+  events carry the row's Index. Swapping List_05's WidgetProperties for List_01's wasn't possible (two loaded copies
+  of each WidgetNode name). Tests: scripts/practice_run.sh clicks PRACTICE, Metro (0.21, 0.218), US (0.47, 0.218);
+  RU is at (0.47, 0.268).
 - UI screen stack: the UI manager (sub_8328B990's r3) keeps the live screens at +0x0C..+0x10 (screen +0x18 name);
   ui_screens.cpp exports bf3_ui_screen_list (ui_state::LiveScreens), BF3_UI_TRACE=1 logs it on change. pc_mouse
   uses it: mouse look only with HudScreen up and no Menu/Spawn/Popup/Options/BackScreen screen (the last pushed
@@ -409,6 +422,9 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
   writes to an 8-byte word through any view (found the LUT writer). BF3_LUT_TRACE=1 (lut_trace.cpp) logs the LUT jobs
   and their color matrices, BF3_FADE_TRACE=1 every fade request, BF3_CFG="Setting value;..." adds Game.cfg lines
   (GameRender.FadeEnable/FadeWaitingEnable false did not help).
+- Open: menu text drew with missing glyphs once (2026-10-26 12:05, PRACTICE page: "TEA DEATH ATCH", "OPERATION M TRO",
+  title blank; M/N/P/R/C/I/É absent); the rerun of the same build was clean. Looks like a Scaleform glyph-cache texture
+  race, not the text edits (strings intact, only some letters missing).
 - Open: ROV path (--render_target_path_d3d12=rov) and --async_shader_compilation=false crashed during level load
   (null read in sub_8314C4A8 from sub_8314F478), probably a timing race; not investigated.
 - Xbox LIVE removed: no sign-in spoofing (live_emulation.cpp deleted). Local online stack (bf_main/local_online.cpp,

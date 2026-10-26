@@ -138,7 +138,7 @@ void PracticeOnMessage(uint8_t* base, uint32_t msg) {
 
 void PracticeRequestDeploy(int kit) { g_deploy_kit = kit; }
 
-// Read by bf3.exe (pc_practice.cpp): the team (1 US, 2 RU) a player without a team gets in the next level.
+// Exported for host tools: the team (1 US, 2 RU) a player without a team gets in the next level.
 extern "C" __declspec(dllexport) void bf3_practice_set_team(int team) {
   if (team == 1 || team == 2) g_team = uint32_t(team);
 }

@@ -5,8 +5,7 @@
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 name=$1; shift
 mkdir -p "$ROOT/logs/ab"
-BF3_PRACTICE_AUTO="${BF3_PRACTICE_AUTO:-MP_Subway:TeamDeathMatch0:1}" \
-BF3_MOUSE_SCRIPT="wait:MainMenuScreen;3000:move:0.13,0.65;800:click" SHOTS=5000 \
+SHOTS=5000 \
   "$ROOT/scripts/practice_run.sh" "${AB_SECS:-130}" info "$@" > "$ROOT/logs/ab/$name.out" 2>&1
 t=$(grep -a "push screen 'SpawnScreen'" "$ROOT/logs/win-run.log" | head -1 | cut -c13-20 | tr -d :)
 if [[ -z $t ]]; then echo "$name: no spawn screen"; exit 1; fi
