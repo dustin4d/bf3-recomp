@@ -33,5 +33,6 @@ See `docs/CLAUDE_SKILL.md` once commands are verified for this project. Redirect
 - Never hand-edit `project/generated/`; change the manifest or override functions in `project/src/`.
 - Cite the guest address for every fix and add it to the fix log.
 - Query Ghidra for specific addresses or functions; never dump the whole binary.
-- Use Ghidra for reverse engineering. If the Ghidra MCP connection is down, or the right program (BF.Main / Default
-  in C:\Users\Dustin\BF3-RECOMP) isn't open, stop and tell the user right away; don't quietly work around it.
+- Use Ghidra for reverse engineering. If the Ghidra MCP connection is down, or the right program isn't open (project
+  file C:\Users\Dustin\BF3-RECOMP.gpr, program /merged/BF.Main.xex; check with get_program_info), stop and tell the
+  user right away; don't quietly work around it.
