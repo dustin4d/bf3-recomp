@@ -20,6 +20,10 @@
 // Compiled into the bf3_BF_Main DLL (see CMakeLists.txt): bf3_pch.h is generated/bf_main/bf3_pch.h.
 #include "bf3_pch.h"
 
+#if BF3_DEV_TOOLS
+#include "dev_internal.h"
+#endif
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -544,6 +548,9 @@ void PracticeOnMessage(uint8_t* base, uint32_t msg);  // practice.cpp
 
 extern "C" REX_FUNC(sub_83026CB8) {
   if (ctx.r4.u32) PracticeOnMessage(base, ctx.r4.u32);
+#if BF3_DEV_TOOLS
+  if (ctx.r4.u32) bf3_dev::OnMessage(base, ctx.r4.u32, uint32_t(ctx.lr));  // debug API message trace
+#endif
   static const bool all = [] {
     const char* env = std::getenv("BF3_MSG_TRACE");
     return env && *env == '2';

@@ -236,7 +236,8 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
   - Commands (`bf3dbg.py <words>`, prints JSON; `help` lists them):
     - state: `status` (phase boot/main_menu/menu/loading/spawn_screen/playing/dead/ingame_menu, UI stack, level and
       frontend_ready, player pos/heading/aim/velocity/team/health/weapon/attachments/ammo_mag/ammo_reserve/kit, server
-      soldier/health/pos, round state/countdown, render camera, fps over 1 s), `perf [s]`, `frames`.
+      soldier/health/pos, round state/countdown, render camera, time paused/timescale, fps over 1 s), `perf [s]`,
+      `frames`, `history [n]` (the crash recorder's per-frame records).
     - game (main thread, next frame): `level [spec]` (refused until the boot's profile load/save is through: a switch
       0.5 s after the main menu hung the load once), `team us|ru`, `deploy [kit 0-3]`, `look <yaw> <pitch>` / `turn`
       (aimer radians), `teleport <x> <y> <z> [heading]`, `entities <ServerClassName|0xTypeInfo>`.
@@ -244,17 +245,43 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
       `pad LY=32767+RT 1500|down|release`, `mouse move|click|down|up|wheel|look`.
     - tools: `cvar <name> [value]`, `peek <hex> [n]`, `poke <hex> f32|u32|u16|u8|bytes <v,...>`,
       `find f32|u32|bytes <v,...> [tol] [lo-hi]` (default 40000000-C0000000, up to 512 hits),
-      `watch <hex> [len] [hits] [secs]` (hardware write watch, heap only; bf3dbg.py prints the writers as guest
-      sub_X frames from the linker maps), `shot`, `quit`. Client-side: `wait <phase> [s]`, `monitor [s]`.
+      `shot`, `quit`. Client-side: `wait <phase> [s]`, `monitor [s]`, `crash`, `tp`.
+    - reverse engineering (2026-10-26):
+      - `trace <sub_X> [hits=16] [secs=10]`: calls of a guest function: r3-r10/f1-f4/lr (guest caller) at entry, r3/f1
+        and duration on return, host stack. `watch <hex> [len] [hits] [secs] [w|rw]`: who writes (w) or reads and
+        writes (rw) a heap address. Up to 4 traces/watches at once (x64 DR0-DR3); `bp` lists them, `watch off` /
+        `trace off [addr|all]`. bf3dbg.py waits for the hits and prints frames as guest sub_X (linker maps).
+      - `call <sub_X> [r3..r10=<v>] [f1..f4=<v>] [scratch=<n>|scratchhex=<hex>] [out=<n>]`: run a guest function on
+        the main thread; values decimal/0x-hex/$scratch[+n] (a stack buffer whose first `out` bytes come back).
+      - `scan new <u32|f32|u16|u8> <v|any> [tol] [lo-hi]` / `scan next <eq|ne|gt|lt|incby|decby> <v> | changed |
+        unchanged | inc | dec` / `scan list`: in-process narrowing search (whole heap in ~0.2 s).
+        `snap <name> <addr> <len>` + `diff <name>`: what changed in a region. `ptrpath <root> <target> [depth] [span]
+        [max] [vt]`: pointer paths, in-process (~0.1 s for 400k objects).
+      - `whatis <addr>`: function (containing sub_X), vtable / type info / object of a class, inside an object
+        (class + offset), string. Class names come from getType() at vtable +0 ("lis rX,hi; addi r3,rX,lo; blr" ->
+        type info; type info +0 -> record +0 -> name).
+      - `messages on [hash,...] | off | read | stats`: the message dispatcher sub_83026CB8; bf3dbg.py names the
+        hashes (djb2-xor of class names from the BF.Main image, cached in logs/dbg/msg_names.json).
+      - `pause` / `resume` / `step [n] [frames|ticks]` / `timescale <0.1-4>`: pause holds the main thread at the frame
+        boundary (simulation, server, input, frame submission stop; queued API work still runs) and slows the guest
+        clock to 1% meanwhile (a scalar of 0 divides by zero in the runtime clock); step n frames is exact; ticks are
+        the local soldier's aiming updates (30/s). timescale sets rex::chrono::Clock's guest time scalar (0.5 halves
+        the tick rate and the walking distance).
+      - Crash recorder: on a guest fault/FATAL log line or an unhandled native exception, the log gets a
+        `[crash_report]` block (native stack, the last 64 API commands with ok/FAIL/... still running, breakpoints,
+        frames: every frame for the last 30 then every 25th of the last 3000). `bf3dbg.py crash` prints the last one.
     - `scripts/addr_refs.py <hex>` finds code building an address with lis+addi/lwz (Ghidra misses those).
   - Conventions: positions are Frostbite world space (Y up). Soldier transform rows left/up/forward/position, the
     soldier faces +forward (heading = atan2(f.x, f.z)); the render camera looks down -forward. camera yaw = heading
     = -aim_yaw (mod 2pi), camera pitch = aim_pitch. Eye = soldier origin + 1.60 m standing.
   - Server: `project/src/dev/debug_api.cpp` (TCP 127.0.0.1:4790, BF3_DEBUG_API=<port>|0; one line in, one JSON line
-    out; add a command with one Register() call), write watch `project/src/dev/dev_watch.cpp`. Game side:
-    `project/src/bf_main/dev_state.cpp` (snapshot at the frame boundary; game commands run on the main thread there,
-    RunOnMainThread waits for a result; shared layout `project/src/dev/dev_shared.h`, bump kSnapshotVersion when it
-    changes).
+    out; add a command with one Register() call), breakpoints `project/src/dev/dev_breakpoints.cpp` (a trap from our
+    debug registers must always be consumed, even for a just-cleared slot: an unhandled single step ends the process
+    with 0x80000004; the handler reads watched values with ReadProcessMemory, a plain read re-traps on rw watches).
+    Game side: `project/src/bf_main/dev_state.cpp` (snapshot at the frame boundary; game commands run on the main
+    thread there, RunOnMainThread waits for a result), `dev_tools.cpp` (call, scan, snap/diff, ptrpath, whatis,
+    messages, time, history), shared helpers `dev_internal.h`; layout `project/src/dev/dev_shared.h`, bump
+    kSnapshotVersion when it changes.
   - Game structures found for it (2026-10-26; addresses are BF.Main guest code):
     - Entity transform (client and server): `*(entity+0x1C)` block; with bit 18 of `entity+8`, the transform is at
       block + byte[block+6] * 80 + 16 (64 bytes, position at +0x30), else at block (sub_833E1AB8 reads it so).
@@ -282,7 +309,15 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
     sub_830B1BE8 <- sub_830B2628 <- sub_833E1990 (server soldier update) <- sub_8343A988. Also seen once during a
     level switch (pre-existing): ui_screens.cpp ScreenList read a garbage pointer from frame_rate.cpp's Playing();
     status now takes the screen stack from the main thread's snapshot, so the API adds no second reader.
-  - Phase 3 (planned): per-frame telemetry CSV, pause/step/timescale, free camera, optional overlay; scores.
+    2026-10-26 evening: caught again by the crash recorder (3rd time) while standing still at ~300 fps after a
+    teleport-fall and a walk. Not reproduced by 220 s idle at 370 fps nor 90 s of walking at 360 fps, so a high frame
+    rate alone is not enough. The ScreenList race also fired once on pc_mouse.cpp's UI thread (LiveScreens) during a
+    level load; non-fatal. Next step for it: `trace sub_830B2628` / `watch rw` on the soldier physics object (+388)
+    around a repro, and `messages on` to see what preceded it.
+  - Found with the new tools: client health readers sub_83751EB0 (HUD, from sub_832980F0/sub_832A6818) and the
+    per-frame soldier pass sub_83262160; soldier +0x34C is ClientSoldierWeaponsComponent, its weapon a
+    ClientSoldierWeapon; sub_83854288(transform, &yaw, &pitch) gives aim angles (heading 1.0 -> yaw 2pi-1).
+  - Still planned: per-frame telemetry CSV, free camera, optional overlay; scores (need a real kill).
 - `find_unregistered.py` hits that land inside a function show up after codegen as `Unresolved b target X from Y`;
   the culprit is the added entry between X and Y. Remove it and regenerate.
 - Headless decompile: `BF3Decompile.java <out.txt> <start>-<end> | <addr>...` (launcher: 82010000-8201C650).

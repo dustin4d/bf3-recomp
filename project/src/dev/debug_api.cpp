@@ -21,9 +21,16 @@
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
+#include <rex/logging/api.h>
+#include <spdlog/details/null_mutex.h>
+#include <spdlog/sinks/base_sink.h>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
+#include <deque>
+#include <mutex>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -35,7 +42,8 @@
 #include <vector>
 
 #include "dev_shared.h"
-#include "dev_watch.h"
+#include "dev_breakpoints.h"
+#include "../crash_trace.h"
 #include "../pad_inject.h"
 #include "../pc_keys.h"
 #include "../pc_mouse.h"
@@ -109,6 +117,13 @@ class Obj {
     return Raw(key, a + "]");
   }
   Obj& Child(std::string_view key, const Obj& o) { return Raw(key, o.Json()); }
+  // Appends already formatted members ("k":v,...), e.g. from bf3_dev_query.
+  Obj& Members(std::string_view members) {
+    if (members.empty()) return *this;
+    if (!body_.empty()) body_ += ',';
+    body_ += members;
+    return *this;
+  }
   std::string Json() const { return "{" + body_ + "}"; }
 
  private:
@@ -309,6 +324,7 @@ Reply Status() {
   ViewAngles(s.camera, -1.0f, cyaw, cpitch);
   r.obj.Child("camera", Obj().Vec("pos", s.camera + 12, 3).Number("yaw", cyaw).Number("pitch", cpitch).Int(
                             "calls_per_frame", s.camera_calls));
+  r.obj.Child("time", Obj().Bool("paused", s.paused).Number("timescale", s.timescale));
   r.obj.Child("perf", Perf(1.0));
   return r;
 }
@@ -376,6 +392,90 @@ std::string Rest(const Args& a, size_t from) {
   std::string s;
   for (size_t i = from; i < a.size(); ++i) s += (i > from ? " " : "") + a[i];
   return s;
+}
+
+// "sub_X" or "0x..." -> bare hex digits.
+std::string Hex0(std::string s) {
+  if (s.rfind("sub_", 0) == 0) return s.substr(4);
+  if (s.rfind("0x", 0) == 0) return s.substr(2);
+  return s;
+}
+
+Reply BpReply(int) {
+  std::string list = "[";
+  bool first = true;
+  for (const BpState& b : Breakpoints()) {
+    std::string records = "[";
+    for (size_t i = 0; i < b.records.size(); ++i) {
+      const BpHit& h = b.records[i];
+      Obj o;
+      o.Int("tid", h.tid).Number("t", h.t);
+      if (b.kind == BpKind::kTrace) {
+        o.Address("lr", h.lr);
+        std::string regs = "[";
+        for (int k = 0; k < 8; ++k) regs += (k ? "," : "") + Hex(uint32_t(h.r[k]));
+        o.Raw("r3_r10", regs + "]");
+        o.Raw("f1_f4", "[" + Num(h.f[0]) + "," + Num(h.f[1]) + "," + Num(h.f[2]) + "," + Num(h.f[3]) + "]");
+        o.Bool("returned", h.returned);
+        if (h.returned) o.Address("ret_r3", uint32_t(h.ret_r3)).Number("ret_f1", h.ret_f1).Number("us", h.duration_us);
+      } else {
+        o.Str("value", h.value_hex);
+      }
+      o.Strings("frames", h.frames);
+      records += (i ? "," : "") + o.Json();
+    }
+    const char* kind = b.kind == BpKind::kTrace ? "trace" : b.kind == BpKind::kWrite ? "write" : "readwrite";
+    list += (first ? "" : ",") + Obj()
+                                     .Int("slot", b.slot)
+                                     .Str("kind", kind)
+                                     .Address("addr", b.guest)
+                                     .Int("len", b.len)
+                                     .Bool("active", b.active)
+                                     .Int("hits", b.hits)
+                                     .Int("max_hits", b.max_hits)
+                                     .Raw("records", records + "]")
+                                     .Json();
+    first = false;
+  }
+  Reply r;
+  r.obj.Raw("breakpoints", list + "]");
+  return r;
+}
+
+// watch off / trace off [<addr>|all]: removes that kind's breakpoints on the address (all of the kind without one).
+Reply RemoveBp(const Args& a, BpKind kind) {
+  long long addr = -1;
+  if (a.size() > 2 && a[2] != "all" && !ParseInt(Hex0(a[2]), addr, 16)) return Fail("bad address");
+  for (const BpState& b : Breakpoints()) {
+    const bool same_kind = (kind == BpKind::kTrace) == (b.kind == BpKind::kTrace);
+    if (same_kind && (addr < 0 || uint32_t(addr) == b.guest)) RemoveBreakpoint(b.slot);
+  }
+  return BpReply(-1);
+}
+
+// The crash recorder's frames (bf3_dev_history), oldest first.
+std::string HistoryJson(int count) {
+  static auto fn = DllExport<int (*)(HistoryRecord*, int)>("bf3_dev_history");
+  if (!fn) fn = DllExport<int (*)(HistoryRecord*, int)>("bf3_dev_history");
+  std::vector<HistoryRecord> h(size_t(std::max(count, 1)));
+  h.resize(fn ? size_t(fn(h.data(), int(h.size()))) : 0);
+  std::string list = "[";
+  for (size_t i = 0; i < h.size(); ++i) {
+    const HistoryRecord& r = h[i];
+    list += (i ? "," : "") + Obj()
+                                 .Number("t", r.uptime_s)
+                                 .Int("frame", r.frame)
+                                 .Number("ms", r.frame_ms)
+                                 .Address("soldier", r.soldier)
+                                 .Address("server_soldier", r.server_soldier)
+                                 .Vec("pos", r.pos, 3)
+                                 .Number("aim_yaw", r.aim_yaw)
+                                 .Number("aim_pitch", r.aim_pitch)
+                                 .Number("health", r.health)
+                                 .Number("server_health", r.server_health)
+                                 .Json();
+  }
+  return list + "]";
 }
 
 void RegisterCommands() {
@@ -640,34 +740,93 @@ void RegisterCommands() {
              r.obj.Address("addr", uint32_t(addr)).Int("written", int64_t(bytes.size()));
              return r;
            });
-  Register("watch", "watch [<guest addr> [len=4] [hits=8] [secs=10] | off]",
-           "hardware write watch on a heap address: who writes it (host stacks; bf3dbg.py names the guest functions); "
-           "without arguments, the current watch and its records",
+  Register("watch", "watch [<addr> [len=4] [hits=8] [secs=10] [w|rw]] | watch off [<addr>|all]",
+           "hardware watch on a heap address: who writes it (w) or reads and writes it (rw); host stacks "
+           "(bf3dbg.py names the guest functions); up to 4 watches/traces at once; no address: all breakpoints",
            [](const Args& a) {
-             if (a.size() > 1 && a[1] == "off") {
-               StopWatch();
-               return Reply{};
-             }
+             if (a.size() > 1 && a[1] == "off") return RemoveBp(a, BpKind::kWrite);
              if (a.size() > 1) {
                long long addr, len = 4, hits = 8, secs = 10;
-               if (!ParseInt(a[1], addr, 16) || addr < 0 || addr > 0xFFFFFFFFLL) return Fail("bad address");
-               if ((a.size() > 2 && !ParseInt(a[2], len)) || (a.size() > 3 && !ParseInt(a[3], hits)) ||
-                   (a.size() > 4 && !ParseInt(a[4], secs)) || hits < 1 || hits > 256 || secs < 1 || secs > 3600) {
-                 return Fail("usage: watch <addr> [len 1|2|4|8] [hits 1-256] [secs 1-3600]");
+               if (!ParseInt(Hex0(a[1]), addr, 16) || addr < 0 || addr > 0xFFFFFFFFLL) return Fail("bad address");
+               bool reads = false;
+               std::vector<long long*> nums = {&len, &hits, &secs};
+               size_t ni = 0;
+               for (size_t i = 2; i < a.size(); ++i) {
+                 if (a[i] == "rw" || a[i] == "w") {
+                   reads = a[i] == "rw";
+                 } else if (ni >= nums.size() || !ParseInt(a[i], *nums[ni++])) {
+                   return Fail("usage: watch <addr> [len 1|2|4|8] [hits 1-256] [secs 1-3600] [w|rw]");
+                 }
                }
+               if (hits < 1 || hits > 256 || secs < 1 || secs > 3600) return Fail("hits 1-256, secs 1-3600");
                std::string error;
-               if (!StartWatch(uint32_t(addr), uint32_t(len), int(hits), uint32_t(secs), error)) return Fail(error);
+               if (AddWatch(uint32_t(addr), uint32_t(len), reads, int(hits), uint32_t(secs), error) < 0) return Fail(error);
              }
-             const WatchState w = GetWatch();
-             std::string records = "[";
-             for (size_t i = 0; i < w.records.size(); ++i) {
-               const WatchHit& h = w.records[i];
-               records += (i ? "," : "") +
-                          Obj().Int("tid", h.tid).Str("value", h.value_hex).Strings("frames", h.frames).Json();
+             return BpReply(-1);
+           }, true);
+  Register("trace", "trace [<sub_X|addr> [hits=16] [secs=10]] | trace off [<addr>|all]",
+           "record calls of a BF.Main guest function: r3-r10, f1-f4 and the guest caller (lr) at entry, r3/f1 on return, "
+           "duration, host stack; shares the 4 debug registers with watch",
+           [](const Args& a) {
+             if (a.size() > 1 && a[1] == "off") return RemoveBp(a, BpKind::kTrace);
+             if (a.size() > 1) {
+               long long addr, hits = 16, secs = 10;
+               if (!ParseInt(Hex0(a[1]), addr, 16) || addr < 0 || addr > 0xFFFFFFFFLL) return Fail("bad address");
+               if ((a.size() > 2 && !ParseInt(a[2], hits)) || (a.size() > 3 && !ParseInt(a[3], secs)) || hits < 1 ||
+                   hits > 1024 || secs < 1 || secs > 3600) {
+                 return Fail("usage: trace <sub_X|addr> [hits 1-1024] [secs 1-3600]");
+               }
+               static auto fn = DllExport<void* (*)(uint32_t)>("bf3_dev_host_func");
+               if (!fn) fn = DllExport<void* (*)(uint32_t)>("bf3_dev_host_func");
+               if (!fn) return Fail("BF.Main is not loaded yet");
+               std::string error;
+               if (AddTrace(uint32_t(addr), fn(uint32_t(addr)), int(hits), uint32_t(secs), error) < 0) return Fail(error);
              }
+             return BpReply(-1);
+           }, true);
+  Register("bp", "bp", "all hardware breakpoints (watches and traces) and their records", [](const Args&) {
+    return BpReply(-1);
+  }, true);
+
+  // Tools on the game side (bf_main/dev_tools.cpp).
+  static const std::vector<std::pair<std::string, std::pair<const char*, const char*>>> kTools = {
+      {"call", {"call <sub_X|addr> [r3..r10=<v>] [f1..f4=<v>] [scratch=<n>|scratchhex=<hex>] [out=<n>]",
+                "run a guest function on the main thread; values decimal, 0x-hex or $scratch[+n] (a stack buffer)"}},
+      {"scan", {"scan new <u32|f32|u16|u8> <value|any> [tol] [lo-hi] | next <op> [v] [tol] | list [n]",
+                "narrowing memory search; ops eq ne gt lt incby decby changed unchanged inc dec"}},
+      {"snap", {"snap <name> <addr> <len>", "remember a memory region (up to 4 MB) for diff"}},
+      {"diff", {"diff <name> [max=200]", "words of a snapped region that changed since"}},
+      {"ptrpath", {"ptrpath <root> <target> [depth=3] [span=0x800] [max=20] [vt]",
+                   "pointer paths from an object to an address (vt: only through objects with a vtable)"}},
+      {"whatis", {"whatis <addr>", "name an address: function, vtable/type info/object of a class, inside an object, "
+                                   "string"}},
+      {"messages", {"messages on [hash,...] | off | read [max] | stats [n]",
+                    "trace the game's message dispatcher (bf3dbg.py names the hashes)"}},
+      {"pause", {"pause", "hold the main loop at the frame boundary (guest clock slowed to 1% meanwhile)"}},
+      {"resume", {"resume", "release a pause"}},
+      {"step", {"step [n=1] [frames|ticks]", "run n frames (or n local simulation ticks), then pause again"}},
+      {"timescale", {"timescale [x]", "guest clock speed, 0.1-4 (1 = normal)"}},
+  };
+  for (const auto& [name, doc] : kTools) {
+    Register(name, doc.first, doc.second, [](const Args& a) {
+      static auto fn = DllExport<int (*)(const char*, char*, int)>("bf3_dev_query");
+      if (!fn) fn = DllExport<int (*)(const char*, char*, int)>("bf3_dev_query");
+      if (!fn) return Fail("BF.Main is not loaded yet");
+      std::string out(1 << 20, '\0');
+      const int n = fn(Rest(a, 0).c_str(), out.data(), int(out.size()));
+      if (n < 0) return Fail(out.c_str());
+      Reply r;
+      r.obj.Members(std::string_view(out.data(), size_t(n)));
+      return r;
+    }, name == "scan" || name == "diff" || name == "whatis" || name == "messages");
+  }
+  Register("history", "history [frames=120]",
+           "the last frames as the crash recorder keeps them (time, frame ms, soldier, position, aim, health)",
+           [](const Args& a) {
+             long long n = 120;
+             if (a.size() > 1 && !ParseInt(a[1], n)) return Fail("bad count");
              Reply r;
-             r.obj.Address("addr", w.guest).Int("len", w.len).Bool("active", w.active).Int("hits", w.hits).Raw(
-                 "records", records + "]");
+             r.obj.Raw("frames", HistoryJson(int(std::clamp(n, 1LL, 3000LL))));
              return r;
            }, true);
   Register("shot", "shot", "capture the game window: \"bytes\" raw top-down BGRA follow the JSON line",
@@ -691,6 +850,107 @@ bool SendAll(SOCKET s, const char* data, size_t n) {
   return true;
 }
 
+// ---- crash recorder ----------------------------------------------------------------------------------------------
+// The last commands, kept for the crash report.
+std::mutex g_log_mutex;
+std::deque<std::string> g_command_log;
+const auto g_api_start = std::chrono::steady_clock::now();
+
+// Logged when a command starts ("..."), then marked ok/FAIL when it returns: a command still running at a crash shows.
+uint64_t g_command_seq = 0;
+
+uint64_t LogCommandStart(const std::string& line) {
+  const double t = std::chrono::duration<double>(std::chrono::steady_clock::now() - g_api_start).count();
+  std::lock_guard lock(g_log_mutex);
+  g_command_log.push_back(fmt::format("#{} {:9.3f}s ...  {}", ++g_command_seq, t, line));
+  if (g_command_log.size() > 64) g_command_log.pop_front();
+  return g_command_seq;
+}
+
+void LogCommandEnd(uint64_t seq, bool ok) {
+  const std::string tag = fmt::format("#{} ", seq);
+  std::lock_guard lock(g_log_mutex);
+  for (std::string& c : g_command_log) {
+    if (c.rfind(tag, 0) == 0) {
+      const size_t dots = c.find(" ...  ");
+      if (dots != std::string::npos) c.replace(dots, 6, ok ? " ok   " : " FAIL ");
+    }
+  }
+}
+
+// The crash report: the last API commands, the breakpoints, and the last frames of game state (every frame for the
+// last 30, then every 25th; the DLL keeps 3000 frames). scripts/bf3dbg.py crash prints the last report from the log.
+std::atomic<int> g_reports{0};
+
+void LogCrashReport(std::string_view reason, const CONTEXT* native) {
+  if (g_reports.fetch_add(1) >= 3) return;
+  REXLOG_ERROR("[crash_report] begin ({})", reason.substr(0, 160));
+  if (native) {
+    CONTEXT c = *native;
+    for (int frame = 0; frame < 32 && c.Rip; ++frame) {
+      REXLOG_ERROR("[crash_report] stack #{:02} {}", frame, AnyFrameName(c.Rip));
+      DWORD64 image_base = 0;
+      auto* fn = RtlLookupFunctionEntry(c.Rip, &image_base, nullptr);
+      if (!fn) break;
+      void* handler_data = nullptr;
+      DWORD64 establisher = 0;
+      RtlVirtualUnwind(UNW_FLAG_NHANDLER, image_base, c.Rip, fn, &c, &handler_data, &establisher, nullptr);
+    }
+  }
+  {
+    std::lock_guard lock(g_log_mutex);
+    for (const std::string& c : g_command_log) REXLOG_ERROR("[crash_report] command {}", c);
+  }
+  for (const BpState& b : Breakpoints()) {
+    REXLOG_ERROR("[crash_report] breakpoint DR{} {} {:08X} hits {}", b.slot, b.kind == BpKind::kTrace ? "trace" : "watch",
+                 b.guest, b.hits);
+  }
+  static auto fn = DllExport<int (*)(HistoryRecord*, int)>("bf3_dev_history");
+  if (!fn) fn = DllExport<int (*)(HistoryRecord*, int)>("bf3_dev_history");
+  std::vector<HistoryRecord> h(3000);
+  h.resize(fn ? size_t(fn(h.data(), int(h.size()))) : 0);
+  for (size_t i = 0; i < h.size(); ++i) {
+    if (h.size() - i > 30 && (h.size() - i) % 25) continue;  // every frame for the last 30, then every 25th
+    const HistoryRecord& r = h[i];
+    REXLOG_ERROR("[crash_report] frame {} t {:.3f} {:.1f} ms soldier {:08X}/{:08X} pos ({:.2f}, {:.2f}, {:.2f}) "
+                 "aim {:.3f}/{:.3f} hp {:.1f}/{:.1f}",
+                 r.frame, r.uptime_s, r.frame_ms, r.soldier, r.server_soldier, r.pos[0], r.pos[1], r.pos[2], r.aim_yaw,
+                 r.aim_pitch, r.health, r.server_health);
+  }
+  REXLOG_ERROR("[crash_report] end");
+  rex::FlushLogging();
+}
+
+// Guest faults and FATALs (the same log lines crash_trace.h reacts to). null_mutex: the report logs through the same
+// loggers.
+class CrashRecorderSink : public spdlog::sinks::base_sink<spdlog::details::null_mutex> {
+ protected:
+  void sink_it_(const spdlog::details::log_msg& msg) override {
+    std::string_view text(msg.payload.data(), msg.payload.size());
+    const bool fatal = msg.level >= spdlog::level::critical && text.find("[FATAL]") != std::string_view::npos;
+    const bool access = text.find("Unhandled guest access violation") != std::string_view::npos;
+    if ((!fatal && !access) || reporting_) return;
+    reporting_ = true;
+    LogCrashReport(text, nullptr);
+    reporting_ = false;
+  }
+  void flush_() override {}
+
+ private:
+  static inline thread_local bool reporting_ = false;
+};
+
+// Native crashes nothing else handled (e.g. an unhandled exception in host code): report, then let the previous filter
+// (or Windows) end the process.
+LPTOP_LEVEL_EXCEPTION_FILTER g_previous_filter = nullptr;
+
+LONG WINAPI CrashFilter(EXCEPTION_POINTERS* info) {
+  LogCrashReport(fmt::format("native exception {:08X} at {}", info->ExceptionRecord->ExceptionCode,
+                             AnyFrameName(info->ContextRecord->Rip)),
+                 info->ContextRecord);
+  return g_previous_filter ? g_previous_filter(info) : EXCEPTION_CONTINUE_SEARCH;
+}
+
 std::string Handle(const std::string& line, std::string& binary) {
   Args args;
   std::istringstream in(line);
@@ -702,11 +962,13 @@ std::string Handle(const std::string& line, std::string& binary) {
     reply = Fail("unknown command '" + args[0] + "' (try help)");
   } else {
     if (!it->second.quiet) REXLOG_INFO("debug api: {}", line);
+    const uint64_t seq = LogCommandStart(line);
     try {
       reply = it->second.run(args);
     } catch (const std::exception& e) {
       reply = Fail(std::string("exception: ") + e.what());
     }
+    LogCommandEnd(seq, reply.ok);
   }
   Obj head;
   head.Bool("ok", reply.ok);
@@ -778,6 +1040,8 @@ void Install() {
     return;
   }
   RegisterCommands();
+  rex::AddSink(std::make_shared<CrashRecorderSink>());
+  g_previous_filter = SetUnhandledExceptionFilter(CrashFilter);
   std::thread(Listen, port).detach();
 }
 

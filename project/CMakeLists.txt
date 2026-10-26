@@ -41,7 +41,7 @@ endif()
 rexglue_setup_target(bf3 GPU_PLUGINS xenos)
 
 if(BF3_DEV_TOOLS)
-    target_sources(bf3 PRIVATE src/dev/debug_api.cpp src/dev/dev_watch.cpp)
+    target_sources(bf3 PRIVATE src/dev/debug_api.cpp src/dev/dev_breakpoints.cpp)
     target_link_libraries(bf3 PRIVATE ws2_32)
 endif()
 
@@ -69,7 +69,7 @@ if(TARGET bf3_BF_Main)
         src/bf_main/pc_concepts.cpp
     )
     if(BF3_DEV_TOOLS)
-        target_sources(bf3_BF_Main PRIVATE src/bf_main/dev_state.cpp)
+        target_sources(bf3_BF_Main PRIVATE src/bf_main/dev_state.cpp src/bf_main/dev_tools.cpp)
     endif()
 endif()
 

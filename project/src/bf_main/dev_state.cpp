@@ -14,6 +14,7 @@
 #include "bf3_pch.h"
 
 #include "dev_state.h"
+#include "dev_internal.h"
 #include "mouse_aim.h"
 #include "pc_concepts.h"
 
@@ -51,10 +52,14 @@ int PracticeLastKit();                   // practice.cpp
 void PracticeApplyTeam(PPCContext& ctx, uint8_t* base, uint32_t team);  // practice.cpp
 void PracticeRequestDeploy(int kit);     // practice.cpp
 extern "C" void bf3_practice_set_team(int team);       // practice.cpp
-int bf3_dev_find_impl(int kind, const double* values, int count, double tol, uint32_t lo, uint32_t hi, uint32_t* out,
-                      int capacity);  // below
 extern "C" void bf3_practice_launch(const char* spec);  // level_boot.cpp
 extern "C" int bf3_ui_screen_list(char* out, int capacity);  // ui_screens.cpp
+
+namespace bf3_dev {
+uint8_t* g_base = nullptr;
+}  // namespace bf3_dev
+
+using namespace bf3_dev;
 
 namespace {
 
@@ -64,7 +69,6 @@ using Snapshot = bf3::dev::Snapshot;
 constexpr const char* kMetroTdm = "Levels/MP_Subway/MP_Subway:GameMode=TeamDeathMatch0";
 constexpr float kPi = 3.14159265f;
 
-uint8_t* g_base = nullptr;
 Clock::time_point g_start;
 
 std::mutex g_mutex;  // everything below
@@ -88,16 +92,17 @@ uint32_t g_camera_calls = 0;
 std::vector<std::function<void(PPCContext&, uint8_t*)>> g_pending;
 std::condition_variable g_done_cv;  // RunOnMainThread waits here (with g_mutex)
 
-float LoadF(uint8_t* base, uint32_t a) { return std::bit_cast<float>(REX_LOAD_U32(a)); }
-
 void LoadMatrix(uint8_t* base, uint32_t a, float* out) {
   for (int i = 0; i < 16; ++i) out[i] = LoadF(base, a + 4 * i);
 }
 
 double Seconds(Clock::duration d) { return std::chrono::duration<double>(d).count(); }
 
-// Guest memory a host read can't fault on.
-bool Readable(uint8_t* base, uint32_t addr, uint32_t length) {
+}  // namespace
+
+float bf3_dev::LoadF(uint8_t* base, uint32_t a) { return std::bit_cast<float>(REX_LOAD_U32(a)); }
+
+bool bf3_dev::Readable(uint8_t* base, uint32_t addr, uint32_t length) {
   if (!base || !length || uint64_t(addr) + length > 0x100000000ull) return false;
   uint8_t* p = base + addr;
   uint8_t* end = p + length;
@@ -112,8 +117,7 @@ bool Readable(uint8_t* base, uint32_t addr, uint32_t length) {
   return true;
 }
 
-// A printable guest C string up to `max` chars ("" if unreadable or not text), read within the string's page.
-std::string GuestString(uint8_t* base, uint32_t addr, size_t max) {
+std::string bf3_dev::GuestString(uint8_t* base, uint32_t addr, size_t max) {
   if (!addr) return {};
   max = std::min<size_t>(max, 0x1000 - (addr & 0xFFF));
   if (!Readable(base, addr, uint32_t(max))) return {};
@@ -127,21 +131,12 @@ std::string GuestString(uint8_t* base, uint32_t addr, size_t max) {
   return s;
 }
 
-// Wraps an angle difference to [-pi, pi).
-float WrapDelta(float a) {
-  a = std::fmod(a + kPi, 2 * kPi);
-  if (a < 0) a += 2 * kPi;
-  return a - kPi;
-}
-
-void Queue(std::function<void(PPCContext&, uint8_t*)> fn) {
+void bf3_dev::Queue(std::function<void(PPCContext&, uint8_t*)> fn) {
   std::lock_guard lock(g_mutex);
   g_pending.push_back(std::move(fn));
 }
 
-// Runs fn on the main thread at the next frame boundary and waits for it (up to `timeout_ms`); false on timeout (the
-// game isn't running frames, e.g. a load): fn may still run later, so it must only touch what it owns.
-bool RunOnMainThread(std::function<void(PPCContext&, uint8_t*)> fn, int timeout_ms = 3000) {
+bool bf3_dev::RunOnMainThread(std::function<void(PPCContext&, uint8_t*)> fn, int timeout_ms) {
   auto done = std::make_shared<bool>(false);
   std::unique_lock lock(g_mutex);
   g_pending.push_back([fn = std::move(fn), done](PPCContext& ctx, uint8_t* base) {
@@ -151,6 +146,35 @@ bool RunOnMainThread(std::function<void(PPCContext&, uint8_t*)> fn, int timeout_
     g_done_cv.notify_all();
   });
   return g_done_cv.wait_for(lock, std::chrono::milliseconds(timeout_ms), [&] { return *done; });
+}
+
+void bf3_dev::RunPending(PPCContext& ctx, uint8_t* base) {
+  std::vector<std::function<void(PPCContext&, uint8_t*)>> pending;
+  {
+    std::lock_guard lock(g_mutex);
+    pending.swap(g_pending);
+  }
+  for (auto& fn : pending) {
+    PPCContext saved = ctx;
+    fn(ctx, base);
+    ctx = saved;
+  }
+}
+
+std::vector<std::string> bf3_dev::Split(const char* line) {
+  std::vector<std::string> out;
+  std::istringstream in(line ? line : "");
+  for (std::string w; in >> w;) out.push_back(w);
+  return out;
+}
+
+namespace {
+
+// Wraps an angle difference to [-pi, pi).
+float WrapDelta(float a) {
+  a = std::fmod(a + kPi, 2 * kPi);
+  if (a < 0) a += 2 * kPi;
+  return a - kPi;
 }
 
 // Server entities of a class (type info object, e.g. 0x8418958C ServerPreRoundEntity), iterated like the idle-kick
@@ -174,14 +198,6 @@ std::vector<uint32_t> ServerEntities(PPCContext& ctx, uint8_t* base, uint32_t ty
     }
   }
   ctx = saved;
-  return out;
-}
-
-
-std::vector<std::string> Split(const char* line) {
-  std::vector<std::string> out;
-  std::istringstream in(line ? line : "");
-  for (std::string w; in >> w;) out.push_back(w);
   return out;
 }
 
@@ -262,16 +278,7 @@ void bf3_main::DevFrame(PPCContext& ctx, uint8_t* base) {
     g_start = now;
   }
 
-  std::vector<std::function<void(PPCContext&, uint8_t*)>> pending;
-  {
-    std::lock_guard lock(g_mutex);
-    pending.swap(g_pending);
-  }
-  for (auto& fn : pending) {
-    PPCContext saved = ctx;
-    fn(ctx, base);
-    ctx = saved;
-  }
+  RunPending(ctx, base);
 
   Snapshot s{};
   s.version = bf3::dev::kSnapshotVersion;
@@ -327,20 +334,30 @@ void bf3_main::DevFrame(PPCContext& ctx, uint8_t* base) {
     s.round_countdown = LoadF(base, pre + 0xB4);
     s.round_started = (REX_LOAD_U8(pre + 0xB8) & 0x80) != 0;
   }
+  s.paused = Paused();
+  s.timescale = Timescale();
 
-  std::lock_guard lock(g_mutex);
-  if (s.soldier && s.soldier == g_xf_soldier) {
-    std::memcpy(s.transform, g_xf, sizeof(g_xf));
-    s.transform_age_s = Seconds(now - g_xf_time);
-    std::memcpy(s.velocity, g_velocity, sizeof(g_velocity));
+  float frame_ms = 0.0f;
+  {
+    std::lock_guard lock(g_mutex);
+    if (s.soldier && s.soldier == g_xf_soldier) {
+      std::memcpy(s.transform, g_xf, sizeof(g_xf));
+      s.transform_age_s = Seconds(now - g_xf_time);
+      std::memcpy(s.velocity, g_velocity, sizeof(g_velocity));
+    }
+    std::memcpy(s.camera, g_camera, sizeof(g_camera));
+    s.camera_calls = g_camera_calls;
+    g_camera_calls = 0;
+    s.frame = g_snap.frame + 1;
+    g_snap = s;
+    if (last != Clock::time_point{}) {
+      frame_ms = float(Seconds(now - last) * 1000.0);
+      g_frame_ms[g_frame_count++ % g_frame_ms.size()] = frame_ms;
+    }
   }
-  std::memcpy(s.camera, g_camera, sizeof(g_camera));
-  s.camera_calls = g_camera_calls;
-  g_camera_calls = 0;
-  s.frame = g_snap.frame + 1;
-  g_snap = s;
-  if (last != Clock::time_point{}) g_frame_ms[g_frame_count++ % g_frame_ms.size()] = float(Seconds(now - last) * 1000.0);
-  last = now;
+  RecordHistory(s, frame_ms);
+  FrameControl(ctx, base);  // may hold here while paused (running queued work)
+  last = Clock::now();      // a pause isn't a frame time
 }
 
 extern "C" REX_FUNC(sub_8325A1D0) {
@@ -415,11 +432,11 @@ extern "C" __declspec(dllexport) bool bf3_dev_poke(uint32_t addr, const uint8_t*
 // 2 = bytes; f32/u32 4-byte aligned. Writes up to `capacity` addresses, returns how many were found in total.
 extern "C" __declspec(dllexport) int bf3_dev_find(int kind, const double* values, int count, double tol, uint32_t lo,
                                                   uint32_t hi, uint32_t* out, int capacity) {
-  return bf3_dev_find_impl(kind, values, count, tol, lo, hi, out, capacity);
+  return bf3_dev::Find(kind, values, count, tol, lo, hi, out, capacity);
 }
 
-int bf3_dev_find_impl(int kind, const double* values, int count, double tol, uint32_t lo, uint32_t hi, uint32_t* out,
-                      int capacity) {
+int bf3_dev::Find(int kind, const double* values, int count, double tol, uint32_t lo, uint32_t hi, uint32_t* out,
+                  int capacity) {
   if (!g_base || count <= 0 || count > 64 || kind < 0 || kind > 2 || (kind != 2 && count > 16)) return 0;
   uint8_t* base = g_base;
   const uint32_t step = kind == 2 ? 1 : 4, span = kind == 2 ? uint32_t(count) : uint32_t(count) * 4;
@@ -469,14 +486,14 @@ static uint32_t FindTypeInfo(uint8_t* base, const std::string& name) {
   for (char c : name) bytes.push_back(double(uint8_t(c)));
   bytes.push_back(0);
   uint32_t strings[16], records[16], infos[16];
-  const int ns = bf3_dev_find_impl(2, bytes.data(), int(bytes.size()), 0, 0x82000000, 0x84300000, strings, 16);
+  const int ns = Find(2, bytes.data(), int(bytes.size()), 0, 0x82000000, 0x84300000, strings, 16);
   for (int i = 0; i < std::min(ns, 16); ++i) {
     if (REX_LOAD_U8(strings[i] - 1) != 0) continue;  // the tail of a longer name
     const double str = strings[i];
-    const int nr = bf3_dev_find_impl(1, &str, 1, 0, 0x84000000, 0x84300000, records, 16);
+    const int nr = Find(1, &str, 1, 0, 0x84000000, 0x84300000, records, 16);
     for (int r = 0; r < std::min(nr, 16); ++r) {
       const double rec = records[r];
-      if (bf3_dev_find_impl(1, &rec, 1, 0, 0x84000000, 0x84300000, infos, 16) > 0) return infos[0];
+      if (Find(1, &rec, 1, 0, 0x84000000, 0x84300000, infos, 16) > 0) return infos[0];
     }
   }
   return 0;

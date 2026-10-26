@@ -10,8 +10,9 @@ Command line:
                                         spawn_screen, playing, ingame_menu)
   bf3dbg.py shot <out.png>              capture the game window
   bf3dbg.py monitor [interval_s]        print a status line every interval
-  bf3dbg.py watch <addr> [len] [hits] [secs]
-                                        hardware write watch; prints the writers by guest function
+  bf3dbg.py watch <addr> [len] [hits] [secs] [w|rw]    hardware watch; prints the accesses by guest function
+  bf3dbg.py trace <sub_X> [hits] [secs]                 calls of a guest function: registers, caller, return
+  bf3dbg.py bp | messages read|stats | crash            breakpoints; message trace with names; last crash report
   bf3dbg.py run [secs] [--metro] [--team us|ru] [--kit n] [--spot name] [--walk ms] [--look yaw pitch]
                 [--exe-args ...]
                                         deploy + launch the game (scripts/win_run.sh, in the background), wait for the
@@ -25,6 +26,7 @@ As a module: `from bf3dbg import Bf3` -> Bf3().cmd("status"), .wait_phase("playi
 
 import argparse
 import json
+import re
 import os
 import socket
 import struct
@@ -195,6 +197,65 @@ class Bf3:
 
 
 _maps = {}
+_msg_names = None
+
+
+def message_names():
+    """Frostbite message hashes (djb2-xor of the class name, see scripts/msg_names.py) -> names, from the BF.Main image;
+    cached in logs/dbg/msg_names.json."""
+    global _msg_names
+    if _msg_names is not None:
+        return _msg_names
+    cache = os.path.join(ROOT, "logs", "dbg", "msg_names.json")
+    if os.path.exists(cache):
+        _msg_names = {int(k): v for k, v in json.load(open(cache)).items()}
+        return _msg_names
+    image_path = os.path.join(ROOT, "dump", "Disc 1", "BF.Main.image.bin")
+    _msg_names = {}
+    if os.path.exists(image_path):
+        image = open(image_path, "rb").read()
+        for m in set(re.findall(rb"[A-Za-z_][A-Za-z0-9_]{2,80}", image)):
+            h = 5381
+            for c in m:
+                h = ((h * 33) ^ c) & 0xFFFFFFFF
+            _msg_names.setdefault(h, m.decode())
+        os.makedirs(os.path.dirname(cache), exist_ok=True)
+        json.dump({str(k): v for k, v in _msg_names.items()}, open(cache, "w"))
+    return _msg_names
+
+
+def print_breakpoints(bps):
+    for b in bps:
+        print(f"DR{b['slot']} {b['kind']} {b['addr']}: {b['hits']} hit(s){' (active)' if b['active'] else ''}")
+        for h in b["records"]:
+            if b["kind"] == "trace":
+                regs = " ".join(f"r{i + 3}={v}" for i, v in enumerate(h["r3_r10"][:5]))
+                ret = f" -> r3={h['ret_r3']} f1={h['ret_f1']:.6g} ({h['us']:.1f} us)" if h["returned"] else " (no return seen)"
+                print(f"  {h['t']:8.3f}s t{h['tid']} from {h['lr']}  {regs} f1={h['f1_f4'][0]:.6g}{ret}")
+            else:
+                print(f"  {h['t']:8.3f}s t{h['tid']} value {h['value']}")
+            for f in h["frames"][:8]:
+                print("      " + resolve_frame(f))
+
+
+def print_crash_report(log_path=os.path.join(ROOT, "logs", "win-run.log")):
+    """Prints the last crash report (and the crash stack) from the game log."""
+    lines = open(log_path, errors="replace").read().splitlines()
+    begins = [i for i, line in enumerate(lines) if "[crash_report] begin" in line]
+    if not begins:
+        print("no crash report in", log_path)
+        return 1
+    start = begins[-1]
+    for line in lines[max(0, start - 40):start]:  # the crash_trace stack just before it
+        if "[crash_trace]" in line or "Unhandled guest" in line:
+            frame = re.search(r"(bf3\S*\.(?:dll|DLL|exe)\+0x[0-9A-Fa-f]+)", line)
+            print(line[line.find("]", 30) + 2:] + (f"   {resolve_frame(frame.group(1))}" if frame else ""))
+    for line in lines[start:]:
+        if "[crash_report]" in line:
+            print(line[line.find("[crash_report]"):])
+        if "[crash_report] end" in line:
+            break
+    return 0
 
 
 def resolve_frame(frame, build_dir=os.path.join(ROOT, "project", "out", "build", "win-cross-release")):
@@ -317,6 +378,8 @@ def main():
             print("shot:", bf.shot(a.shot))
         return 0
 
+    if verb == "crash":  # reads the log; the game may be gone
+        return print_crash_report()
     try:
         bf = Bf3()
     except OSError:
@@ -345,17 +408,31 @@ def main():
         while True:
             print(status_line(bf.status()), flush=True)
             time.sleep(interval)
-    if verb == "watch" and len(argv) > 1 and argv[1] != "off":
-        # Arm, then wait for the hits (or the time) and print the writers by guest function.
+    if verb in ("watch", "trace") and len(argv) > 1 and argv[1] != "off":
+        # Arm, wait for the hits (or the time), then print the records by guest function.
         reply = bf.cmd(" ".join(argv))
-        while reply.get("active"):
+        addr = argv[1][4:] if argv[1].startswith("sub_") else argv[1]
+        target = int(addr, 16)
+        while True:
+            mine = [b for b in reply["breakpoints"] if int(b["addr"], 16) == target and
+                    (b["kind"] == "trace") == (verb == "trace")]
+            if not mine or not mine[-1]["active"]:
+                break
             time.sleep(0.25)
-            reply = bf.cmd("watch")
-        print(f"watch {reply['addr']}: {reply['hits']} write(s)")
-        for h in reply["records"]:
-            print(f"  t{h['tid']} value {h['value']}")
-            for f in h["frames"][:12]:
-                print("    " + resolve_frame(f))
+            reply = bf.cmd("bp")
+        print_breakpoints(mine)
+        return 0
+    if verb == "bp":
+        print_breakpoints(bf.cmd("bp")["breakpoints"])
+        return 0
+    if verb == "messages" and (len(argv) == 1 or argv[1] in ("read", "stats")):
+        reply = bf.cmd(" ".join(argv))
+        names = message_names()
+        for e in reply["items"]:
+            cat, typ = int(e["category"], 16), int(e["type"], 16)
+            head = f"{e['t']:9.3f}s seq {e['seq']:<6} " if "seq" in e else f"{e['count']:>7} x  "
+            print(f"{head}{names.get(typ, e['type'])}  [{names.get(cat, e['category'])}]"
+                  + (f"  from {e['lr']}" if "lr" in e else ""))
         return 0
     reply, _ = bf.request(" ".join(argv))
     print(json.dumps(reply, indent=2))

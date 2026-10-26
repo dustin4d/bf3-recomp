@@ -7,7 +7,7 @@
 
 namespace bf3::dev {
 
-constexpr uint32_t kSnapshotVersion = 5;
+constexpr uint32_t kSnapshotVersion = 6;
 
 // Game state as of the last main loop frame (filled on the main thread at the frame boundary).
 struct Snapshot {
@@ -60,6 +60,22 @@ struct Snapshot {
   uint32_t round_players_needed;
   float round_countdown;     // seconds left before the round starts (<= 0 once running)
   uint8_t round_started;     // the countdown has begun (enough players)
+
+  // Time controls (bf_main/dev_tools.cpp).
+  uint8_t paused;            // the main loop is held at the frame boundary
+  float timescale;           // guest clock speed (1 = normal)
+};
+
+// One frame of history for the crash recorder (bf3_dev_history): the last few seconds before a fault.
+struct HistoryRecord {
+  double uptime_s;
+  uint32_t frame;
+  float frame_ms;
+  uint32_t soldier, server_soldier;
+  float pos[3];
+  float aim_yaw, aim_pitch;
+  float health, server_health;
+  uint8_t level_loaded, round_started;
 };
 
 }  // namespace bf3::dev
@@ -69,3 +85,8 @@ struct Snapshot {
 //   int  bf3_dev_frame_times(float* out_ms, int capacity)                recent frame times, oldest first
 //   bool bf3_dev_request(const char* line, char* reply, int capacity)    game commands (main thread, next frame)
 //   int  bf3_dev_peek(uint32_t guest_addr, uint8_t* out, int length)     guest memory read (bytes copied, 0 if unmapped)
+//   bool bf3_dev_poke / int bf3_dev_find                                   memory write / search (see dev_state.cpp)
+//   void* bf3_dev_host_func(uint32_t guest_addr)                          recompiled function of a BF.Main address
+//   int  bf3_dev_query(const char* line, char* out, int capacity)        tool commands; writes JSON members (no braces),
+//                                                                          returns the length, < 0 on error (out = text)
+//   int  bf3_dev_history(HistoryRecord* out, int capacity)               recent frames, oldest first
