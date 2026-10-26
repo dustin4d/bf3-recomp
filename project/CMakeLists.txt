@@ -54,6 +54,7 @@ if(TARGET bf3_BF_Main)
         src/bf_main/ui_buttons.cpp
         src/bf_main/ui_mouse.cpp
         src/bf_main/main_menu.cpp
+        src/bf_main/boot_flow.cpp
         src/bf_main/local_online.cpp
     )
 endif()

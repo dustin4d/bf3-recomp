@@ -13,6 +13,8 @@
 #include <rex/cvar.h>
 
 REXCVAR_DEFINE_BOOL(skip_splash, true, "BF3", "Skip BF.Splash (not recompiled) and load BF.Main first");
+REXCVAR_DEFINE_BOOL(skip_title, true, "BF3",
+                    "Boot straight to the main menu: no PRESS START title screen or CHECKING DATA popup (bf_main/boot_flow.cpp)");
 
 REX_EXTERN(__imp__sub_820112A0);
 

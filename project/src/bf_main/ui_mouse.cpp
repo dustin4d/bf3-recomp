@@ -171,6 +171,7 @@ thread_local uint32_t t_provider_caller = 0;
 thread_local uint32_t t_read_caller = 0;
 
 void bf3_local_online_data_read(PPCContext& ctx, uint8_t* base, uint32_t key, uint32_t out);
+void bf3_boot_flow_data_read(uint8_t* base, uint32_t key, uint32_t out);
 
 // Flow data read (sub_83294100(node r3, key r4, value* r5, refresh r6)): who asked.
 extern "C" REX_FUNC(sub_83294100) {
@@ -180,6 +181,7 @@ extern "C" REX_FUNC(sub_83294100) {
   __imp__sub_83294100(ctx, base);
   t_read_caller = saved;
   bf3_local_online_data_read(ctx, base, key, out);  // local_online.cpp
+  bf3_boot_flow_data_read(base, key, out);           // boot_flow.cpp
   static const bool trace = [] {
     const char* env = std::getenv("BF3_DATA_TRACE");
     return env && *env == '1';
