@@ -4,10 +4,15 @@
 // onto the game image (letterboxed in the client area) and queued in bf3_BF_Main.dll (bf3_ui_mouse_event,
 // bf_main/ui_mouse.cpp), which hands them to the UI movie on the UI thread. The messages still go on to ReXGlue.
 //
-// Menu mode is on while a menu screen is on top: ReXGlue's mouse look is switched off (the cursor is free and the
-// mouse doesn't drive the right stick), and the triggers the mouse buttons are bound to are masked from the game
-// (pad_inject.cpp), so a click is only a click. Right-click (and the mouse's back button) goes back: some PC screens
-// have no Back button. In gameplay (a HUD screen on top) mouse look comes back.
+// Menu mode is on while a menu screen is on top: the cursor is free, and the triggers the mouse buttons are bound to
+// are masked from the game (pad_inject.cpp), so a click is only a click. Right-click (and the mouse's back button) goes
+// back: some PC screens have no Back button.
+//
+// Mouse look (gameplay: a HUD screen on top, mouse_look on) is our own, like a native PC game, and doesn't go through
+// ReXGlue's controller emulation (its mnk_mouse is kept off): the window takes Raw Input (WM_INPUT, unaccelerated
+// counts), the cursor is hidden and clipped to the window while the game has focus, and bf_main/mouse_aim.cpp turns
+// the soldier by the counts each frame through bf3_mouse_look_delta (radians, with mouse_sensitivity, the aim-down-
+// sights scale mouse_ads_sensitivity while the button bound to the left trigger is held, and mouse_invert_y).
 
 #include "pc_mouse.h"
 
@@ -15,20 +20,36 @@
 #include <windows.h>
 #include <windowsx.h>
 
-#include <rex/input/mnk/mnk_input_driver.h>
+#include <rex/cvar.h>
 #include <rex/logging.h>
 
 #include <algorithm>
 #include <atomic>
+#include <cstdio>
 #include <cstdlib>
+#include <mutex>
 #include <string>
+#include <vector>
 
 #include "pad_inject.h"
 #include "pc_settings.h"
 #include "ui_state.h"
 
+REXCVAR_DEFINE_BOOL(mouse_look, true, "BF3", "Mouse turns the soldier while playing (raw input, cursor captured)");
+REXCVAR_DEFINE_DOUBLE(mouse_sensitivity, 1.0, "BF3", "Mouse look sensitivity (1.0 = 0.046 degrees per count)");
+REXCVAR_DEFINE_DOUBLE(mouse_ads_sensitivity, 0.6, "BF3",
+                      "Mouse look scale while aiming down sights (the button bound to the left trigger held)");
+REXCVAR_DEFINE_BOOL(mouse_invert_y, false, "BF3", "Invert mouse look up/down");
+
 namespace bf3::pc_mouse {
 namespace {
+
+constexpr double kRadiansPerCount = 0.0008;
+
+// Raw counts gathered while looking (x right, y down), handed out by bf3_mouse_look_delta.
+std::mutex g_raw_mutex;
+double g_raw_dx = 0.0, g_raw_dy = 0.0;
+std::atomic<bool> g_captured{false};
 
 using EventFn = void (*)(uint32_t type, float nx, float ny, uint32_t button, float scroll);
 
@@ -74,7 +95,24 @@ bool Normalize(HWND hwnd, int x, int y, float& nx, float& ny) {
 
 bool Forwarding() { return g_event && g_menu_mode && !pc_settings::IsOpen() && !GameInputBlocked(); }
 
+void OnRawInput(HRAWINPUT handle) {
+  RAWINPUT raw;
+  UINT size = sizeof(raw);
+  if (GetRawInputData(handle, RID_INPUT, &raw, &size, sizeof(RAWINPUTHEADER)) == UINT(-1)) return;
+  if (raw.header.dwType != RIM_TYPEMOUSE || (raw.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE)) return;
+  if (!g_captured.load(std::memory_order_relaxed)) return;
+  std::lock_guard lock(g_raw_mutex);
+  g_raw_dx += raw.data.mouse.lLastX;
+  g_raw_dy += raw.data.mouse.lLastY;
+}
+
 LRESULT CALLBACK Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+  if (msg == WM_INPUT) {
+    OnRawInput(reinterpret_cast<HRAWINPUT>(lp));
+  } else if (msg == WM_SETCURSOR && g_captured.load(std::memory_order_relaxed) && LOWORD(lp) == HTCLIENT) {
+    SetCursor(nullptr);
+    return TRUE;
+  }
   if (Forwarding()) {
     float nx, ny;
     switch (msg) {
@@ -129,12 +167,72 @@ BOOL CALLBACK FindWindowProc(HWND hwnd, LPARAM out) {
   return FALSE;
 }
 
+// Raw Input for the mouse, delivered to the game window (re-registered if something else took the registration).
+void EnsureRawInput() {
+  UINT count = 0;
+  GetRegisteredRawInputDevices(nullptr, &count, sizeof(RAWINPUTDEVICE));
+  std::vector<RAWINPUTDEVICE> devices(count);
+  if (count && GetRegisteredRawInputDevices(devices.data(), &count, sizeof(RAWINPUTDEVICE)) != UINT(-1)) {
+    for (const RAWINPUTDEVICE& d : devices) {
+      if (d.usUsagePage == 0x01 && d.usUsage == 0x02 && d.hwndTarget == g_window) return;
+    }
+  }
+  RAWINPUTDEVICE mouse{0x01, 0x02, 0, g_window};  // generic desktop, mouse; legacy messages stay on for the menus
+  if (RegisterRawInputDevices(&mouse, 1, sizeof(mouse))) {
+    REXLOG_INFO("pc mouse: raw input registered");
+  } else {
+    REXLOG_WARN("pc mouse: RegisterRawInputDevices failed ({})", GetLastError());
+  }
+}
+
+// Mouse look owns the cursor while playing with the game window in front: hidden and clipped to the client area.
+void UpdateCapture(bool look) {
+  const bool capture = look && GetForegroundWindow() == g_window && !pc_settings::IsOpen() && !GameInputBlocked();
+  if (capture) {
+    RECT rc;
+    GetClientRect(g_window, &rc);
+    POINT tl{rc.left, rc.top}, br{rc.right, rc.bottom};
+    ClientToScreen(g_window, &tl);
+    ClientToScreen(g_window, &br);
+    RECT clip{tl.x, tl.y, br.x, br.y};
+    ClipCursor(&clip);  // re-applied every poll: Windows drops the clip on focus changes
+  }
+  if (capture == g_captured.exchange(capture)) return;
+  if (!capture) ClipCursor(nullptr);
+  {
+    std::lock_guard lock(g_raw_mutex);
+    g_raw_dx = g_raw_dy = 0.0;  // nothing gathered before capture or while released reaches the camera
+  }
+  // WM_SETCURSOR hides it from now on; nudge the window so the change shows without moving the mouse.
+  PostMessageW(g_window, WM_SETCURSOR, WPARAM(g_window), MAKELPARAM(HTCLIENT, WM_MOUSEMOVE));
+  REXLOG_INFO("pc mouse: cursor {}", capture ? "captured (mouse look)" : "released");
+}
+
 void UpdateMenuMode() {
   const std::string top = ui_state::TopScreen();
   const bool menu = top.empty() || !IsGameplay(ui_state::LiveScreens(), top);
   if (menu != g_menu_mode.exchange(menu)) REXLOG_INFO("pc mouse: {} ({})", menu ? "menu mode" : "mouse look", top);
-  rex::input::mnk::SetMouseLookActive(!menu);
   SetMenuTriggerMask(menu);
+  UpdateCapture(!menu && REXCVAR_GET(mouse_look));
+}
+
+// The mouse button(s) bound to the left trigger (aim down sights), as virtual keys.
+bool AimHeld() {
+  static std::string cached_bind;
+  static std::vector<int> keys;
+  const std::string bind = rex::cvar::GetFlagByName("keybind_left_trigger");
+  if (bind != cached_bind) {
+    cached_bind = bind;
+    keys.clear();
+    for (auto [name, vk] : {std::pair{"RMB", VK_RBUTTON}, {"LMB", VK_LBUTTON}, {"MMB", VK_MBUTTON},
+                            {"Mouse4", VK_XBUTTON1}, {"Mouse5", VK_XBUTTON2}}) {
+      if (bind.find(name) != std::string::npos) keys.push_back(vk);
+    }
+  }
+  for (int vk : keys) {
+    if (GetAsyncKeyState(vk) & 0x8000) return true;
+  }
+  return false;
 }
 
 // Test input (BF3_MOUSE_SCRIPT): steps separated by ';': "wait:<Screen>", "<delay ms>:move:<x>,<y>" (0..1 across the
@@ -180,6 +278,31 @@ void RunScript(const char* script) {
 
 bool MenuMode() { return g_menu_mode; }
 
+}  // namespace bf3::pc_mouse
+
+// Read by bf_main/mouse_aim.cpp once per frame: the turn since the last call, in radians (yaw right +, pitch up +),
+// false while the mouse isn't looking.
+extern "C" __declspec(dllexport) bool bf3_mouse_look_delta(float* yaw, float* pitch) {
+  using namespace bf3::pc_mouse;
+  double dx, dy;
+  {
+    std::lock_guard lock(g_raw_mutex);
+    dx = g_raw_dx, dy = g_raw_dy;
+    g_raw_dx = g_raw_dy = 0.0;
+  }
+  if (!g_captured.load(std::memory_order_relaxed)) {
+    *yaw = *pitch = 0.0f;
+    return false;
+  }
+  double k = kRadiansPerCount * REXCVAR_GET(mouse_sensitivity);
+  if (AimHeld()) k *= REXCVAR_GET(mouse_ads_sensitivity);
+  *yaw = float(dx * k);
+  *pitch = float((REXCVAR_GET(mouse_invert_y) ? dy : -dy) * k);
+  return true;
+}
+
+namespace bf3::pc_mouse {
+
 void Install() {
   if (const char* env = std::getenv("BF3_MENU_MOUSE"); env && *env == '0') return;
   CreateThread(
@@ -197,7 +320,40 @@ void Install() {
         }
         g_original_proc = reinterpret_cast<WNDPROC>(
             SetWindowLongPtrW(g_window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&Proc)));
+        // ReXGlue's mouse look (mouse -> emulated right stick, its own capture) stays off: mouse look is ours.
+        rex::cvar::SetFlagByName("mnk_mouse", "false");
         REXLOG_INFO("pc mouse: menu mouse on window {}", static_cast<void*>(g_window));
+        // BF3_MOUSE_LOOK_TEST="<dx>,<dy>,<steps>[;...]": 4 s after mouse look captures the cursor, sends <steps>
+        // relative moves of (dx, dy) counts, 10 ms apart, per group, 3 s between groups (SendInput: real raw input).
+        if (const char* test = std::getenv("BF3_MOUSE_LOOK_TEST"); test && *test) {
+          CreateThread(
+              nullptr, 0,
+              [](LPVOID p) -> DWORD {
+                while (!g_captured) Sleep(100);
+                Sleep(4000);
+                std::string all = static_cast<const char*>(p);
+                for (size_t start = 0; start < all.size();) {
+                  size_t end = all.find(';', start);
+                  const std::string group = all.substr(start, end == std::string::npos ? std::string::npos : end - start);
+                  start = end == std::string::npos ? all.size() : end + 1;
+                  int dx = 0, dy = 0, steps = 0;
+                  std::sscanf(group.c_str(), "%d,%d,%d", &dx, &dy, &steps);
+                  REXLOG_INFO("pc mouse: look test {} x ({}, {})", steps, dx, dy);
+                  for (int i = 0; i < steps; ++i) {
+                    INPUT in{};
+                    in.type = INPUT_MOUSE;
+                    in.mi.dx = dx;
+                    in.mi.dy = dy;
+                    in.mi.dwFlags = MOUSEEVENTF_MOVE;
+                    SendInput(1, &in, sizeof(in));
+                    Sleep(10);
+                  }
+                  Sleep(3000);
+                }
+                return 0;
+              },
+              const_cast<char*>(test), 0, nullptr);
+        }
         if (const char* script = std::getenv("BF3_MOUSE_SCRIPT"); script && *script) {
           CreateThread(
               nullptr, 0,
@@ -207,7 +363,8 @@ void Install() {
               },
               const_cast<char*>(script), 0, nullptr);
         }
-        for (;;) {
+        for (int i = 0;; ++i) {
+          if (i % 20 == 0) EnsureRawInput();  // RegisterRawInputDevices needs no particular thread
           UpdateMenuMode();
           Sleep(50);
         }

@@ -22,6 +22,9 @@ bool GameInputBlocked();
 // click goes to the menu as a click; see pc_mouse.cpp).
 void SetMenuTriggerMask(bool masked);
 
+// While active, controller 0's right stick reads (rx, ry) (aim_scan.cpp drives it).
+void SetRightStickOverride(bool active, int16_t rx = 0, int16_t ry = 0);
+
 // Holds the given X_INPUT_GAMEPAD button bits down for `ms` milliseconds (menu mouse: right-click = Back).
 void PulseButtons(uint16_t buttons, uint32_t ms);
 

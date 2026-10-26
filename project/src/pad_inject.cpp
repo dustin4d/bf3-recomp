@@ -53,6 +53,8 @@ std::atomic<uint16_t> g_pulse_buttons{0};
 std::atomic<uint64_t> g_pulse_until{0};
 std::vector<Step> g_steps;
 std::atomic<uint32_t> g_packet{0x40000000};
+std::atomic<bool> g_rstick_override{false};
+std::atomic<int32_t> g_rstick_rx{0}, g_rstick_ry{0};
 // Script position (only touched from the guest input poll; guarded for polls from several threads).
 std::mutex g_script_mutex;
 size_t g_step = 0;
@@ -139,6 +141,18 @@ void HookedXamInputGetState(PPCContext& ctx, uint8_t* base) {
       g_pulse_buttons = 0;
     }
   }
+  if (user == 0 && g_rstick_override.load(std::memory_order_relaxed)) {
+    uint8_t* p = base + state;
+    if (ctx.r3.u32 != 0) {
+      std::memset(p, 0, 16);
+      ctx.r3.u64 = 0;
+    }
+    const int16_t rx = int16_t(g_rstick_rx.load()), ry = int16_t(g_rstick_ry.load());
+    p[12] = uint8_t(uint16_t(rx) >> 8), p[13] = uint8_t(rx);
+    p[14] = uint8_t(uint16_t(ry) >> 8), p[15] = uint8_t(ry);
+    const uint32_t packet = g_packet.fetch_add(1);
+    p[0] = uint8_t(packet >> 24), p[1] = uint8_t(packet >> 16), p[2] = uint8_t(packet >> 8), p[3] = uint8_t(packet);
+  }
   if (user != 0 || g_steps.empty()) return;
   uint64_t now = GetTickCount64();
   uint16_t buttons = 0;
@@ -205,6 +219,12 @@ bool GameInputBlocked() { return g_blocked; }
 
 void SetMenuTriggerMask(bool masked) { g_mask_triggers = masked; }
 
+void SetRightStickOverride(bool active, int16_t rx, int16_t ry) {
+  g_rstick_rx = rx;
+  g_rstick_ry = ry;
+  g_rstick_override = active;
+}
+
 void PulseButtons(uint16_t buttons, uint32_t ms) {
   g_pulse_until = GetTickCount64() + ms;
   g_pulse_buttons = buttons;
@@ -248,5 +268,6 @@ std::shared_mutex& InputLock() { return g_input_lock; }
 void SetGameInputBlocked(bool) {}
 void SetMenuTriggerMask(bool) {}
 void PulseButtons(uint16_t, uint32_t) {}
+void SetRightStickOverride(bool, int16_t, int16_t) {}
 }  // namespace bf3
 #endif

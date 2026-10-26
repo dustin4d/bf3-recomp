@@ -18,6 +18,7 @@
 namespace bf3 {
 void InstallDiagnostics();  // crash_trace.cpp
 void InstallAudioCapture();  // audio_capture.cpp
+void InstallAimScan();  // aim_scan.cpp
 }
 #include <rex/rex_app.h>
 
@@ -58,6 +59,7 @@ class Bf3App : public rex::ReXApp {
     bf3::ApplyPcDisplayDefaults();
     bf3::InstallPadInject();
     bf3::InstallAudioCapture();
+    bf3::InstallAimScan();
     bf3::InstallKernelFixes();
     bf3::pc_icons::Install();
     bf3::pc_mouse::Install();

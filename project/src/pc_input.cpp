@@ -3,7 +3,7 @@
 // The game sees an Xbox 360 controller; each emulated button gets the PC key(s) that do the same thing in BF3 PC:
 //   menus     arrows = D-pad, Enter = A (confirm), Esc/Backspace = B (back), P = Start
 //   (at most 3 keys per button: the PC SETTINGS screen edits 3 slots)
-//   on foot   WASD = left stick, mouse = right stick (look), LMB = RT (fire), RMB = LT (aim), Space = A (jump),
+//   on foot   WASD = left stick, mouse = look (our raw input, pc_mouse.cpp; not the right stick), LMB = RT (fire), RMB = LT (aim), Space = A (jump),
 //             C = B (crouch, hold = prone), R/E = X (reload/interact), 1/2 = Y (switch weapon),
 //             G = RB (grenade), Q = LB (spot), Shift = left stick press (sprint), F/V = right stick press (melee),
 //             3/4 = D-pad left/right (gadgets), Tab = Back (scoreboard)
@@ -21,7 +21,6 @@ namespace {
 
 constexpr std::pair<std::string_view, std::string_view> kPcInputDefaults[] = {
     {"mnk_mode", "true"},
-    {"mnk_mouse", "true"},
     {"keybind_a", "Space,Return"},
     {"keybind_b", "C,Escape,Backspace"},
     {"keybind_x", "R,E"},
@@ -65,8 +64,8 @@ void ApplyPcInputDefaults() {
     if (rex::cvar::GetFlagSource(name) != rex::cvar::Source::kDefault) continue;
     if (!rex::cvar::SetFlagByName(name, value)) REXLOG_WARN("pc_input: could not set {} = '{}'", name, value);
   }
-  REXLOG_INFO("pc_input: mnk_mode={} mnk_mouse={} start='{}' a='{}'", rex::cvar::GetFlagByName("mnk_mode"),
-              rex::cvar::GetFlagByName("mnk_mouse"), rex::cvar::GetFlagByName("keybind_start"),
+  REXLOG_INFO("pc_input: mnk_mode={} start='{}' a='{}'", rex::cvar::GetFlagByName("mnk_mode"),
+              rex::cvar::GetFlagByName("keybind_start"),
               rex::cvar::GetFlagByName("keybind_a"));
 }
 

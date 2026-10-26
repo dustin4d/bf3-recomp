@@ -15,6 +15,7 @@ set(BF3_SOURCES
     src/main.cpp
     src/launcher_hooks.cpp
     src/crash_trace.cpp
+    src/aim_scan.cpp
     src/pad_inject.cpp
     src/pc_input.cpp
     src/ui_state.cpp
@@ -46,6 +47,7 @@ if(TARGET bf3_BF_Main)
         src/bf_main/fade_fix.cpp
         src/bf_main/practice.cpp
         src/bf_main/frame_rate.cpp
+        src/bf_main/mouse_aim.cpp
         src/bf_main/lua_dump.cpp
         src/bf_main/ui_screens.cpp
         src/bf_main/level_boot.cpp

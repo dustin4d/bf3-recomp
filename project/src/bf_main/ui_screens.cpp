@@ -6,6 +6,8 @@
 // Compiled into the bf3_BF_Main DLL (see CMakeLists.txt): bf3_pch.h is generated/bf_main/bf3_pch.h.
 #include "bf3_pch.h"
 
+#include <windows.h>
+
 #include <atomic>
 #include <cstdlib>
 #include <cstring>
@@ -35,24 +37,33 @@ bool Plausible(uint32_t a) {
   return (a >= 0x40000000 && a < 0x7FFF0000) || (a >= 0x82000000 && a < 0x84300000);
 }
 
-// The manager's live screens: vector at +0x0C..+0x10 of screen pointers (name at +0x18), in push order.
-std::string ScreenList(uint8_t* base, uint32_t manager) {
-  std::string list;
-  if (!base || !Plausible(manager)) return list;
-  const uint32_t begin = REX_LOAD_U32(manager + 0x0C), end = REX_LOAD_U32(manager + 0x10);
-  if (!Plausible(begin) || end < begin || end - begin > 64 * 4) return list;
-  for (uint32_t p = begin; p < end; p += 4) {
-    const uint32_t screen = REX_LOAD_U32(p);
-    if (!Plausible(screen)) continue;
-    const uint32_t name = REX_LOAD_U32(screen + 0x18);
-    if (!Plausible(name)) continue;
-    const char* text = reinterpret_cast<const char*>(REX_RAW_ADDR(name));
-    size_t n = 0;
-    while (n < 64 && text[n] >= 0x20 && text[n] < 0x7F) ++n;
-    if (!list.empty()) list += ';';
-    list.append(text, n);
+// The manager's live screens: vector at +0x0C..+0x10 of screen pointers (name at +0x18), in push order. Written into
+// out (names joined by ';'), returns the length. Other threads read this while the UI thread changes the stack (a
+// level switch rebuilds it), so a pointer can go stale between the checks and the read: a fault returns what was
+// gathered so far.
+int ScreenListRaw(uint8_t* base, uint32_t manager, char* out, int capacity) {
+  int len = 0;
+  if (!base || !Plausible(manager)) return 0;
+  __try {
+    const uint32_t begin = REX_LOAD_U32(manager + 0x0C), end = REX_LOAD_U32(manager + 0x10);
+    if (!Plausible(begin) || end < begin || end - begin > 64 * 4) return 0;
+    for (uint32_t p = begin; p < end; p += 4) {
+      const uint32_t screen = REX_LOAD_U32(p);
+      if (!Plausible(screen)) continue;
+      const uint32_t name = REX_LOAD_U32(screen + 0x18);
+      if (!Plausible(name)) continue;
+      const char* text = reinterpret_cast<const char*>(REX_RAW_ADDR(name));
+      if (len && len < capacity) out[len++] = ';';
+      for (int n = 0; n < 64 && len < capacity && text[n] >= 0x20 && text[n] < 0x7F; ++n) out[len++] = text[n];
+    }
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
   }
-  return list;
+  return len;
+}
+
+std::string ScreenList(uint8_t* base, uint32_t manager) {
+  char buf[2048];
+  return std::string(buf, ScreenListRaw(base, manager, buf, sizeof(buf)));
 }
 
 }  // namespace

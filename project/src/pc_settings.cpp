@@ -1,7 +1,8 @@
 // PC SETTINGS screen (see pc_settings.h). Adapted from the Trials HD port's KEY BINDINGS screen.
 //
-// The game sees an Xbox 360 controller driven by ReXGlue's keyboard/mouse emulation (keybind_* flags, mnk_mouse,
-// mnk_sensitivity); this screen edits those flags under BF3's action names, plus the display flags (fullscreen,
+// The game sees an Xbox 360 controller driven by ReXGlue's keyboard emulation (keybind_* flags); this screen edits
+// those flags under BF3's action names, our mouse look flags (mouse_look, mouse_sensitivity, mouse_ads_sensitivity,
+// mouse_invert_y: pc_mouse.cpp), plus the display flags (fullscreen,
 // present_vsync = host vsync, max_fps = gameplay frame rate limit, read by bf_main/frame_rate.cpp). While it is open the
 // game sees an idle controller (pad_inject.h). Flag writes take the input lock exclusively: the keyboard driver copies
 // the keybind strings on every guest poll.
@@ -104,7 +105,8 @@ const std::vector<std::string>& OwnedFlags() {
         if (std::find(out.begin(), out.end(), a.flag) == out.end()) out.push_back(a.flag);
       }
     }
-    for (const char* f : {"mnk_mouse", "mnk_sensitivity", "fullscreen", "present_vsync", "max_fps"}) {
+    for (const char* f : {"mouse_look", "mouse_sensitivity", "mouse_ads_sensitivity", "mouse_invert_y", "fullscreen",
+                          "present_vsync", "max_fps"}) {
       out.push_back(f);
     }
     return out;
@@ -165,8 +167,10 @@ class SettingsDialog final : public rex::ui::ImGuiDialog {
     for (const std::string& flag : OwnedFlags()) {
       if (flag.rfind("keybind_", 0) == 0) working_[flag] = Split(rex::cvar::GetFlagByName(flag));
     }
-    mouse_look_ = rex::cvar::GetFlagByName("mnk_mouse") == "true";
-    sensitivity_ = std::stof(rex::cvar::GetFlagByName("mnk_sensitivity"));
+    mouse_look_ = rex::cvar::GetFlagByName("mouse_look") == "true";
+    sensitivity_ = std::stof(rex::cvar::GetFlagByName("mouse_sensitivity"));
+    ads_sensitivity_ = std::stof(rex::cvar::GetFlagByName("mouse_ads_sensitivity"));
+    invert_y_ = rex::cvar::GetFlagByName("mouse_invert_y") == "true";
     fullscreen_ = rex::cvar::GetFlagByName("fullscreen") == "true";
     vsync_ = rex::cvar::GetFlagByName("present_vsync") == "true";
     max_fps_ = std::atoi(rex::cvar::GetFlagByName("max_fps").c_str());
@@ -191,6 +195,8 @@ class SettingsDialog final : public rex::ui::ImGuiDialog {
   std::map<std::string, Slots> working_;
   bool mouse_look_ = true;
   float sensitivity_ = 1.0f;
+  float ads_sensitivity_ = 0.6f;
+  bool invert_y_ = false;
   bool fullscreen_ = false;
   bool vsync_ = false;
   int max_fps_ = 0;
@@ -268,8 +274,10 @@ void SettingsDialog::CaptureKey() {
 
 void SettingsDialog::RestoreDefaults() {
   for (auto& [flag, slots] : working_) slots = Split(DefaultFor(flag));
-  mouse_look_ = DefaultFor("mnk_mouse") == "true";
+  mouse_look_ = true;
   sensitivity_ = 1.0f;
+  ads_sensitivity_ = 0.6f;
+  invert_y_ = false;
   fullscreen_ = false;
   vsync_ = false;
   max_fps_ = 0;
@@ -318,8 +326,10 @@ bool WriteOwnedSettings(const std::filesystem::path& path, const std::map<std::s
 void SettingsDialog::Save() {
   std::map<std::string, std::string> values;
   for (const auto& [flag, slots] : working_) values[flag] = Join(slots);
-  values["mnk_mouse"] = mouse_look_ ? "true" : "false";
-  values["mnk_sensitivity"] = fmt::format("{:.2f}", sensitivity_);
+  values["mouse_look"] = mouse_look_ ? "true" : "false";
+  values["mouse_sensitivity"] = fmt::format("{:.2f}", sensitivity_);
+  values["mouse_ads_sensitivity"] = fmt::format("{:.2f}", ads_sensitivity_);
+  values["mouse_invert_y"] = invert_y_ ? "true" : "false";
   values["fullscreen"] = fullscreen_ ? "true" : "false";
   values["present_vsync"] = vsync_ ? "true" : "false";
   values["max_fps"] = std::to_string(max_fps_);
@@ -411,9 +421,15 @@ void SettingsDialog::DrawMouse(float scale) {
   ImGui::TextUnformatted("Sensitivity");
   ImGui::SetNextItemWidth(420 * scale);
   ImGui::SliderFloat("##sens", &sensitivity_, 0.10f, 5.0f, "%.2f");
+  ImGui::Dummy(ImVec2(0, 6 * scale));
+  ImGui::TextUnformatted("Aiming down sights (scale while the aim button is held)");
+  ImGui::SetNextItemWidth(420 * scale);
+  ImGui::SliderFloat("##ads", &ads_sensitivity_, 0.10f, 1.50f, "%.2f");
+  ImGui::Dummy(ImVec2(0, 6 * scale));
+  ImGui::Checkbox("Invert vertical look", &invert_y_);
   ImGui::Dummy(ImVec2(0, 10 * scale));
-  ImGui::TextColored(kTextDim, "Invert look, aim assist and in-game sensitivity are in the game's own");
-  ImGui::TextColored(kTextDim, "OPTIONS > CONTROLS and GAMEPLAY screens; they apply on top of these.");
+  ImGui::TextColored(kTextDim, "Mouse look is raw input with no acceleration, like BF3 on PC. The game's own");
+  ImGui::TextColored(kTextDim, "stick sensitivity and invert options only affect a controller.");
 }
 
 void SettingsDialog::DrawDisplay(float scale) {
