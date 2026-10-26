@@ -21,6 +21,9 @@ C:\Games\BF3-recomp.
 - `project/` ReXGlue project: manifest, `generated/` (never hand-edited), `src/` (our hooks).
 - `tools/` SDKs and sysroots (not committed, except `tools/cross/`). `scripts/` helpers. `logs/` all logs.
 - `docs/CLAUDE_SKILL.md` verified commands, manifest syntax, fix log, findings.
+- `scripts/bf3dbg.py` client for the debug API in development builds (`project/src/dev/`): load Metro, deploy, read
+  player/world state, inject input, screenshot. Tests go through it. It must never ship: production builds use the
+  `win-cross-ship` preset (BF3_DEV_TOOLS=OFF).
 - `docs/reference/trialshd_CLAUDE_SKILL.md` notes from the Trials HD port (same toolchain); reference only,
   its addresses do not apply here.
 - `ENVIRONMENT.md` setup steps and first-run checklist.

@@ -49,6 +49,11 @@ uint16_t PadButtons();
 // "D-pad", "Stick"): in menus the menu binding, while playing the PC key for what that button does on foot.
 std::string GlyphKey(const std::string& button);
 
+// Key name -> virtual key as the key_* flags spell it (also Mouse4/Mouse5/WheelUp/WheelDown); 0 if unknown.
+int ParseKeyName(const std::string& name);
+// Debug API: holds a key for `hold_ms` (0 releases it) as if pressed on the keyboard, without window focus.
+void InjectKey(int vk, uint32_t hold_ms);
+
 // Exported to bf3_BF_Main.dll (bf3_pc_concepts in pc_keys.cpp).
 void Install();
 

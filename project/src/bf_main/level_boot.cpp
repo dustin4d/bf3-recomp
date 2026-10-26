@@ -376,7 +376,13 @@ extern "C" REX_FUNC(sub_833B0750) {
 void FadeWatchdogTick(PPCContext& ctx, uint8_t* base);  // fade_fix.cpp
 void PracticeTick(PPCContext& ctx, uint8_t* base);      // practice.cpp
 
+std::atomic<uint32_t> g_level_manager{0};
+
+uint32_t bf3_level_manager() { return g_level_manager.load(std::memory_order_relaxed); }
+uint64_t bf3_level_entered_ingame_ms() { return g_entered_ingame_ms.load(); }
+
 extern "C" REX_FUNC(sub_833AF040) {
+  g_level_manager.store(ctx.r3.u32, std::memory_order_relaxed);
   FadeWatchdogTick(ctx, base);
   PracticeTick(ctx, base);
   static bool boot_requested = false;

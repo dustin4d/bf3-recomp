@@ -8,6 +8,9 @@
 #include "bf3_pch.h"
 
 #include "mouse_aim.h"
+#if BF3_DEV_TOOLS
+#include "dev_state.h"
+#endif
 
 #include <rex/cvar.h>
 
@@ -81,6 +84,9 @@ extern "C" REX_FUNC(sub_83838CF0) {
     ctx.f1.f64 = max_fps == 0.0 ? 0.0 : 1.0 / max_fps;
   }
   __imp__sub_83838CF0(ctx, base);
+#if BF3_DEV_TOOLS
+  bf3_main::DevFrame(ctx, base);  // debug API: game commands (e.g. a look) before this frame's mouse sample
+#endif
   bf3_main::SampleMouseLook(ctx, base);  // the next frame starts here
 }
 

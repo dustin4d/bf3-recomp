@@ -224,6 +224,29 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
   entry, called with the launcher state object. `0x820130D8` is `__savegprlr_28`, not a getter (decompiler confusion).
 - Testing: `SHOTS=3000 scripts/win_run.sh <secs> <level>` deploys, runs from C:\Games\BF3-recomp with
   `--game_data_root=C:\Games\BF3-recomp\game`, logs to `logs/win-run.log`, user data to `logs/win-userdata`.
+- Debug API (2026-10-26; development builds only, CMake option `BF3_DEV_TOOLS`, ON by default; preset
+  `win-cross-ship` turns it OFF for production and compiles none of it). Use it for tests instead of menu clicks and
+  timed pad scripts:
+  - `scripts/bf3dbg.py run 300 --metro [--team ru] [--kit 0] [--walk ms] [--look yaw pitch] [--shot out.png]`
+    deploys, launches (win_run.sh in the background, 300 s), boots to the main menu and goes straight to Metro TDM
+    (`team`, `level`, `deploy`; ~35 s to playing). `bf3dbg.py metro` does the same on a running game. The solo round
+    start holds the soldier ~10 s after the deploy (countdown); `--walk`/`--look` first wait until W moves it.
+  - Commands (`bf3dbg.py <words>`, prints JSON; `help` lists them): `status` (phase boot/main_menu/menu/loading/
+    spawn_screen/playing/ingame_menu, UI stack, level, player pos/heading/aim/velocity/team, render camera, fps over
+    1 s), `perf [s]`, `frames`, `level [spec]`, `team us|ru`, `deploy [kit]`, `look <yaw> <pitch>` / `turn` (aimer
+    radians), `key W+LShift 2000|down|up` (key_* names, also LMB/RMB), `pad LY=32767+RT 1500|down|release`,
+    `mouse move|click|down|up|wheel|look`, `cvar <name> [value]`, `peek <hex addr> [n]`, `shot` (bf3dbg.py shot x.png),
+    `quit`. `wait <phase> [s]` and `watch [s]` are client-side. Input needs no window focus.
+  - Conventions: positions are Frostbite world space (Y up). Soldier transform rows left/up/forward/position, the
+    soldier faces +forward; the render camera looks down -forward. camera yaw = -aim_yaw (mod 2pi), camera pitch =
+    aim_pitch. Eye = soldier origin + 1.60 m standing.
+  - Server: `project/src/dev/debug_api.cpp` (TCP 127.0.0.1:4790, BF3_DEBUG_API=<port>|0; one line in, one JSON line
+    out; add a command with one Register() call). Game side: `project/src/bf_main/dev_state.cpp` (snapshot at the
+    frame boundary, game commands run on the main thread there; shared layout `project/src/dev/dev_shared.h`, bump
+    kSnapshotVersion when it changes). Hooks: sub_8325A1D0(soldier, transform, flag) sets the soldier's world
+    transform (local soldier recorded); sub_832C8108(this, out, r5) writes the render camera transform to out.
+  - Phase 2 (planned): teleport (server and client soldier), health/ammo/kit, round state (tickets, phase, time).
+    Phase 3: per-frame telemetry CSV, pause/step/timescale, free camera, optional overlay.
 - `find_unregistered.py` hits that land inside a function show up after codegen as `Unresolved b target X from Y`;
   the culprit is the added entry between X and Y. Remove it and regenerate.
 - Headless decompile: `BF3Decompile.java <out.txt> <start>-<end> | <addr>...` (launcher: 82010000-8201C650).

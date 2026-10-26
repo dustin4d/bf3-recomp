@@ -56,6 +56,14 @@ std::vector<Step> g_steps;
 std::atomic<uint32_t> g_packet{0x40000000};
 std::atomic<bool> g_rstick_override{false};
 std::atomic<int32_t> g_rstick_rx{0}, g_rstick_ry{0};
+// Debug API pad (InjectPad): held until `until` (GetTickCount64).
+std::mutex g_inject_mutex;
+struct Injected {
+  uint16_t buttons = 0;
+  uint8_t lt = 0, rt = 0;
+  int16_t thumbs[4] = {};
+  uint64_t until = 0;
+} g_injected;
 // Script position (only touched from the guest input poll; guarded for polls from several threads).
 std::mutex g_script_mutex;
 size_t g_step = 0;
@@ -165,6 +173,31 @@ void ControllerState(PPCContext& ctx, uint8_t* base) {
     const uint32_t packet = g_packet.fetch_add(1);
     p[0] = uint8_t(packet >> 24), p[1] = uint8_t(packet >> 16), p[2] = uint8_t(packet >> 8), p[3] = uint8_t(packet);
   }
+  if (user == 0) {
+    Injected in;
+    {
+      std::lock_guard lock(g_inject_mutex);
+      in = g_injected;
+    }
+    if (GetTickCount64() < in.until) {
+      uint8_t* p = base + state;
+      if (ctx.r3.u32 != 0) {  // no device: synthesize a connected, idle controller
+        std::memset(p, 0, 16);
+        ctx.r3.u64 = 0;
+      }
+      const uint16_t now = uint16_t(p[4] << 8 | p[5]) | in.buttons;
+      p[4] = uint8_t(now >> 8), p[5] = uint8_t(now);
+      p[6] = std::max(p[6], in.lt);
+      p[7] = std::max(p[7], in.rt);
+      for (int a = 0; a < 4; ++a) {
+        if (!in.thumbs[a]) continue;
+        p[8 + a * 2] = uint8_t(uint16_t(in.thumbs[a]) >> 8);
+        p[9 + a * 2] = uint8_t(in.thumbs[a]);
+      }
+      const uint32_t packet = g_packet.fetch_add(1);
+      p[0] = uint8_t(packet >> 24), p[1] = uint8_t(packet >> 16), p[2] = uint8_t(packet >> 8), p[3] = uint8_t(packet);
+    }
+  }
   if (user != 0 || g_steps.empty()) return;
   uint64_t now = GetTickCount64();
   uint16_t buttons = 0;
@@ -266,6 +299,31 @@ void PulseButtons(uint16_t buttons, uint32_t ms) {
   g_pulse_buttons = buttons;
 }
 
+bool ParsePadState(const std::string& spec, uint16_t& buttons, uint8_t& lt, uint8_t& rt, int16_t thumbs[4]) {
+  Step step{};
+  for (size_t b = 0; b <= spec.size();) {
+    size_t plus = spec.find('+', b);
+    const std::string name = spec.substr(b, plus == std::string::npos ? std::string::npos : plus - b);
+    try {
+      if (!ParseButton(name, step)) return false;
+    } catch (const std::exception&) {
+      return false;
+    }
+    if (plus == std::string::npos) break;
+    b = plus + 1;
+  }
+  buttons = step.buttons, lt = step.lt, rt = step.rt;
+  std::copy(step.thumbs, step.thumbs + 4, thumbs);
+  return true;
+}
+
+void InjectPad(uint16_t buttons, uint8_t lt, uint8_t rt, const int16_t thumbs[4], uint32_t hold_ms) {
+  std::lock_guard lock(g_inject_mutex);
+  g_injected.buttons = buttons, g_injected.lt = lt, g_injected.rt = rt;
+  std::copy(thumbs, thumbs + 4, g_injected.thumbs);
+  g_injected.until = hold_ms ? GetTickCount64() + hold_ms : 0;
+}
+
 void InstallPadInject() {
   const char* script = std::getenv("BF3_PAD_SCRIPT");
   if (script && *script) ParseScript(script);
@@ -304,5 +362,7 @@ std::shared_mutex& InputLock() { return g_input_lock; }
 void SetGameInputBlocked(bool) {}
 void PulseButtons(uint16_t, uint32_t) {}
 void SetRightStickOverride(bool, int16_t, int16_t) {}
+bool ParsePadState(const std::string&, uint16_t&, uint8_t&, uint8_t&, int16_t[4]) { return false; }
+void InjectPad(uint16_t, uint8_t, uint8_t, const int16_t[4], uint32_t) {}
 }  // namespace bf3
 #endif

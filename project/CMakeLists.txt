@@ -10,6 +10,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include(generated/rexglue.cmake)
 
+# Development tools: the debug API (src/dev/, bf_main/dev_state.cpp) that tests and scripts/bf3dbg.py drive the game
+# through. Production builds turn it off (preset win-cross-ship) so none of it is compiled in.
+option(BF3_DEV_TOOLS "Build the debug API (development only; off for production builds)" ON)
+
 # Sources
 set(BF3_SOURCES
     src/main.cpp
@@ -36,6 +40,11 @@ endif()
 
 rexglue_setup_target(bf3 GPU_PLUGINS xenos)
 
+if(BF3_DEV_TOOLS)
+    target_sources(bf3 PRIVATE src/dev/debug_api.cpp)
+    target_link_libraries(bf3 PRIVATE ws2_32)
+endif()
+
 # Hooks for guest functions that live in a DLL module must be linked into that module's library: a strong
 # definition in bf3.exe can't override a weak function inside bf3_BF_Main.dll.
 if(TARGET bf3_BF_Main)
@@ -59,7 +68,16 @@ if(TARGET bf3_BF_Main)
         src/bf_main/local_online.cpp
         src/bf_main/pc_concepts.cpp
     )
+    if(BF3_DEV_TOOLS)
+        target_sources(bf3_BF_Main PRIVATE src/bf_main/dev_state.cpp)
+    endif()
 endif()
+
+foreach(_t bf3 bf3_BF_Main)
+    if(TARGET ${_t})
+        target_compile_definitions(${_t} PRIVATE BF3_DEV_TOOLS=$<BOOL:${BF3_DEV_TOOLS}>)
+    endif()
+endforeach()
 
 # Linker maps for scripts/resolve_rva.py (crash_trace frames are <module>+0x<RVA>).
 if(WIN32)

@@ -138,6 +138,15 @@ void PracticeOnMessage(uint8_t* base, uint32_t msg) {
 
 void PracticeRequestDeploy(int kit) { g_deploy_kit = kit; }
 
+// The ServerPlayer that last entered a level (0 before).
+uint32_t PracticeServerPlayer() { return g_entered_player.load(); }
+
+// Moves the player that entered the level to `team` now, if it is on another one (main thread).
+void PracticeApplyTeam(PPCContext& ctx, uint8_t* base, uint32_t team) {
+  const uint32_t player = g_entered_player.load();
+  if (player && REX_LOAD_U32(player + 0x324) != team) SetTeam(ctx, base, player, team);
+}
+
 // Exported for host tools: the team (1 US, 2 RU) a player without a team gets in the next level.
 extern "C" __declspec(dllexport) void bf3_practice_set_team(int team) {
   if (team == 1 || team == 2) g_team = uint32_t(team);

@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <shared_mutex>
+#include <string>
 
 namespace bf3 {
 
@@ -23,5 +24,11 @@ void SetRightStickOverride(bool active, int16_t rx = 0, int16_t ry = 0);
 
 // Holds the given X_INPUT_GAMEPAD button bits down for `ms` milliseconds (menu mouse: right-click = Back).
 void PulseButtons(uint16_t buttons, uint32_t ms);
+
+// Debug API: parses "A+LB+LY=32767+RT" (BF3_PAD_SCRIPT's button names) into a controller state; false if a name is
+// unknown.
+bool ParsePadState(const std::string& spec, uint16_t& buttons, uint8_t& lt, uint8_t& rt, int16_t thumbs[4]);
+// Debug API: controller 0 also reads this state for `hold_ms` (0 releases it), without window focus.
+void InjectPad(uint16_t buttons, uint8_t lt, uint8_t rt, const int16_t thumbs[4], uint32_t hold_ms);
 
 }  // namespace bf3

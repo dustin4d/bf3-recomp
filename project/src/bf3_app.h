@@ -14,6 +14,9 @@
 #include "pad_inject.h"
 #include "pc_input.h"
 #include "pc_keys.h"
+#if BF3_DEV_TOOLS
+#include "dev/debug_api.h"
+#endif
 
 namespace bf3 {
 void InstallDiagnostics();  // crash_trace.cpp
@@ -65,6 +68,9 @@ class Bf3App : public rex::ReXApp {
     bf3::pc_icons::Install();
     bf3::pc_mouse::Install();
     bf3::local_profile::Install(user_data_root_);
+#if BF3_DEV_TOOLS
+    bf3::dev::Install();
+#endif
   }
   // void OnLoadXexImage(std::string& xex_image) override {}
   // void OnPostLoadXexImage() override {}

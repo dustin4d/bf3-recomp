@@ -53,6 +53,7 @@ std::mutex g_raw_mutex;
 double g_raw_dx = 0.0, g_raw_dy = 0.0;
 std::atomic<bool> g_captured{false};
 std::atomic<bool> g_feeding{false};  // BF3_MOUSE_FEED test: counts arrive without a captured cursor
+std::atomic<uint64_t> g_inject_until{0};  // debug API look counts (InjectLookCounts) count until then
 
 using EventFn = void (*)(uint32_t type, float nx, float ny, uint32_t button, float scroll);
 
@@ -291,6 +292,21 @@ bool TakeCounts(double& dx, double& dy) {
   return g_captured.load(std::memory_order_relaxed);
 }
 
+void InjectLookCounts(double dx, double dy) {
+  {
+    std::lock_guard lock(g_raw_mutex);
+    g_raw_dx += dx;
+    g_raw_dy += dy;
+  }
+  g_inject_until = GetTickCount64() + 500;  // taken by the next frames even without a captured cursor
+}
+
+bool InjectMenuEvent(uint32_t type, float x, float y, float scroll) {
+  if (!g_event) return false;
+  g_event(type, x, y, 0, scroll);
+  return true;
+}
+
 }  // namespace bf3::pc_mouse
 
 // Read by bf_main/mouse_aim.cpp once per frame: the turn since the last call, in radians (yaw right +, pitch up +),
@@ -303,7 +319,8 @@ extern "C" __declspec(dllexport) bool bf3_mouse_look_delta(float* yaw, float* pi
     dx = g_raw_dx, dy = g_raw_dy;
     g_raw_dx = g_raw_dy = 0.0;
   }
-  if (!g_captured.load(std::memory_order_relaxed) && !g_feeding.load(std::memory_order_relaxed)) {
+  if (!g_captured.load(std::memory_order_relaxed) && !g_feeding.load(std::memory_order_relaxed) &&
+      GetTickCount64() >= g_inject_until.load(std::memory_order_relaxed)) {
     *yaw = *pitch = 0.0f;
     return false;
   }
@@ -431,5 +448,7 @@ void Install() {}
 bool MenuMode() { return false; }
 bool GameFocused() { return false; }
 bool TakeCounts(double&, double&) { return false; }
+void InjectLookCounts(double, double) {}
+bool InjectMenuEvent(uint32_t, float, float, float) { return false; }
 }  // namespace bf3::pc_mouse
 #endif

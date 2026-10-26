@@ -199,6 +199,26 @@ bool RawDown(int vk) {
   return (GetAsyncKeyState(vk) & 0x8000) != 0;
 }
 
+// Keys held by the debug API (InjectKey): vk -> release time (NowMs). They count as down without focus and are never
+// stale, and while any is held the game plays as if focused.
+std::mutex g_inject_mutex;
+std::map<int, uint64_t> g_injected;
+
+std::bitset<kKeyCount> InjectedDown() {
+  std::bitset<kKeyCount> down;
+  std::lock_guard lock(g_inject_mutex);
+  const uint64_t now = NowMs();
+  for (auto it = g_injected.begin(); it != g_injected.end();) {
+    if (now >= it->second) {
+      it = g_injected.erase(it);
+      continue;
+    }
+    if (it->first > 0 && it->first < kKeyCount) down.set(it->first);
+    ++it;
+  }
+  return down;
+}
+
 enum class Context { kNone, kMenu, kPlay };
 
 // Keys held when the context changed stay ignored until released.
@@ -206,8 +226,8 @@ std::mutex g_state_mutex;
 Context g_context = Context::kNone;
 std::bitset<kKeyCount> g_stale;
 
-Context CurrentContext() {
-  if (!pc_mouse::GameFocused() || pc_settings::IsOpen() || GameInputBlocked()) return Context::kNone;
+Context CurrentContext(bool injected = false) {
+  if ((!pc_mouse::GameFocused() && !injected) || pc_settings::IsOpen() || GameInputBlocked()) return Context::kNone;
   return pc_mouse::MenuMode() ? Context::kMenu : Context::kPlay;
 }
 
@@ -219,7 +239,8 @@ struct Keys {
 
 Keys Poll() {
   Keys k;
-  k.context = CurrentContext();
+  const std::bitset<kKeyCount> injected = InjectedDown();
+  k.context = CurrentContext(injected.any());
   std::lock_guard lock(g_state_mutex);
   const bool changed = k.context != g_context;
   if (changed) REXLOG_INFO("pc keys: context {}", k.context == Context::kPlay ? "playing" : k.context == Context::kMenu ? "menu" : "none");
@@ -233,6 +254,7 @@ Keys Poll() {
     if (changed) g_stale.set(vk);
     if (!g_stale.test(vk)) k.down.set(vk);
   }
+  if (k.context != Context::kNone) k.down |= injected;
   return k;
 }
 
@@ -299,6 +321,18 @@ void OnWheel(int notches) {
   if (!notches) return;
   g_recent_wheel = notches;
   (notches > 0 ? g_wheel_up_until : g_wheel_down_until) = NowMs() + 90;  // a few frames: one weapon switch
+}
+
+int ParseKeyName(const std::string& name) { return ParseKey(name); }
+
+void InjectKey(int vk, uint32_t hold_ms) {
+  if (vk <= 0 || vk >= kKeyCount) return;
+  std::lock_guard lock(g_inject_mutex);
+  if (hold_ms) {
+    g_injected[vk] = NowMs() + hold_ms;
+  } else {
+    g_injected.erase(vk);
+  }
 }
 
 uint16_t PadButtons() {
@@ -472,6 +506,8 @@ std::vector<std::string> SplitKeys(const std::string&) { return {}; }
 std::string KeyName(int) { return {}; }
 std::string TakeRecentWheel() { return {}; }
 void OnWheel(int) {}
+int ParseKeyName(const std::string&) { return 0; }
+void InjectKey(int, uint32_t) {}
 uint16_t PadButtons() { return 0; }
 std::string GlyphKey(const std::string&) { return {}; }
 void Install() {}

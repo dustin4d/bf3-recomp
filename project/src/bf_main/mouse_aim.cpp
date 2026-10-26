@@ -60,6 +60,9 @@ DeltaFn MouseLookDelta() {
 
 // Mouse turn sampled at frame starts and not yet applied by a tick (radians; main thread only).
 float g_frame_dx = 0.0f, g_frame_dy = 0.0f;
+// Turn added by the debug API (InjectLook), taken at the next frame start like mouse motion (main thread only).
+float g_inject_dx = 0.0f, g_inject_dy = 0.0f;
+std::atomic<uint64_t> g_aim_ticks{0};
 
 float LoadF(uint8_t* base, uint32_t a) { return std::bit_cast<float>(REX_LOAD_U32(a)); }
 void StoreF(uint8_t* base, uint32_t a, float v) { REX_STORE_U32(a, std::bit_cast<uint32_t>(v)); }
@@ -110,7 +113,15 @@ void bf3_main::SampleMouseLook(PPCContext& ctx, uint8_t* base) {
   float dx = 0.0f, dy = 0.0f;
   DeltaFn delta = MouseLookDelta();
   // In a vehicle the counts are left for the vehicle's look concepts (pc_concepts.cpp).
-  if (!delta || !g_player_aim_state.load(std::memory_order_relaxed) || !LocalOnFoot() || !delta(&dx, &dy)) {
+  const bool aiming = g_player_aim_state.load(std::memory_order_relaxed) && LocalOnFoot();
+  const bool mouse = aiming && delta && delta(&dx, &dy);
+  const bool injected = aiming && (g_inject_dx != 0.0f || g_inject_dy != 0.0f);
+  if (injected) {
+    dx += g_inject_dx;
+    dy += g_inject_dy;
+  }
+  g_inject_dx = g_inject_dy = 0.0f;
+  if (!mouse && !injected) {
     g_frame_dx = g_frame_dy = 0.0f;
     return;
   }
@@ -131,6 +142,18 @@ void bf3_main::SampleMouseLook(PPCContext& ctx, uint8_t* base) {
 
 // The aiming state the local player's input state is filled from (also read by bf3.exe's BF3_WATCH=aim).
 extern "C" __declspec(dllexport) uint32_t bf3_aim_state() { return g_player_aim_state.load(); }
+
+uint32_t bf3_main::LocalSoldier() {
+  const uint32_t soldier = g_player_soldier.load(std::memory_order_relaxed);
+  return soldier && GetTickCount64() - g_player_soldier_ms.load(std::memory_order_relaxed) < 200 ? soldier : 0;
+}
+
+uint64_t bf3_main::LocalAimTicks() { return g_aim_ticks.load(std::memory_order_relaxed); }
+
+void bf3_main::InjectLook(float dyaw, float dpitch) {
+  g_inject_dx += dyaw;
+  g_inject_dy += dpitch;
+}
 
 extern "C" REX_FUNC(sub_832EC788) {
   const uint32_t lr = uint32_t(ctx.lr);
@@ -198,6 +221,7 @@ extern "C" REX_FUNC(sub_83267DF0) {
   if (!state || state != g_player_aim_state.load(std::memory_order_relaxed)) return;
   const uint32_t aimer = REX_LOAD_U32(state + 8);
   if (!aimer) return;
+  g_aim_ticks.fetch_add(1, std::memory_order_relaxed);
   g_tick.state = state;
   g_tick.yaw = g_tick.shown_yaw = LoadF(base, state + 0xC);
   g_tick.pitch = g_tick.shown_pitch = LoadF(base, state + 0x10);

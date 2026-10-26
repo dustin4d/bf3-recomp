@@ -21,6 +21,15 @@
         "CMAKE_BUILD_TYPE": "Release",
         "rexglue_DIR": "/home/dustin/workspace/bf3-recomp/tools/cross/rexglue"
       }
+    },
+    {
+      "name": "win-cross-ship",
+      "displayName": "Windows AMD64 production (no development tools)",
+      "inherits": "win-cross-release",
+      "binaryDir": "${sourceDir}/out/build/win-cross-ship",
+      "cacheVariables": {
+        "BF3_DEV_TOOLS": "OFF"
+      }
     }
   ],
   "buildPresets": [
@@ -32,6 +41,11 @@
     {
       "name": "win-cross-release",
       "configurePreset": "win-cross-release",
+      "jobs": 6
+    },
+    {
+      "name": "win-cross-ship",
+      "configurePreset": "win-cross-ship",
       "jobs": 6
     }
   ]
