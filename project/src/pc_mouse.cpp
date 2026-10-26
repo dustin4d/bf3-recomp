@@ -4,15 +4,15 @@
 // onto the game image (letterboxed in the client area) and queued in bf3_BF_Main.dll (bf3_ui_mouse_event,
 // bf_main/ui_mouse.cpp), which hands them to the UI movie on the UI thread. The messages still go on to ReXGlue.
 //
-// Menu mode is on while a menu screen is on top: the cursor is free, and the triggers the mouse buttons are bound to
-// are masked from the game (pad_inject.cpp), so a click is only a click. Right-click (and the mouse's back button) goes
-// back: some PC screens have no Back button.
+// Menu mode is on while a menu screen is on top: the cursor is free and the keyboard drives the menus (pc_keys.cpp);
+// mouse buttons only fire and zoom while playing. Right-click (and the mouse's back button) goes back: some PC screens
+// have no Back button.
 //
 // Mouse look (gameplay: a HUD screen on top, mouse_look on) is our own, like a native PC game, and doesn't go through
 // ReXGlue's controller emulation (its mnk_mouse is kept off): the window takes Raw Input (WM_INPUT, unaccelerated
 // counts), the cursor is hidden and clipped to the window while the game has focus, and bf_main/mouse_aim.cpp turns
 // the soldier by the counts each frame through bf3_mouse_look_delta (radians, with mouse_sensitivity, the aim-down-
-// sights scale mouse_ads_sensitivity while the button bound to the left trigger is held, and mouse_invert_y).
+// sights scale mouse_ads_sensitivity while the Zoom key (pc_keys key_zoom) is held, and mouse_invert_y).
 
 #include "pc_mouse.h"
 
@@ -22,6 +22,7 @@
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
+#include <rex/ui/keybinds.h>
 
 #include <algorithm>
 #include <atomic>
@@ -32,13 +33,14 @@
 #include <vector>
 
 #include "pad_inject.h"
+#include "pc_keys.h"
 #include "pc_settings.h"
 #include "ui_state.h"
 
 REXCVAR_DEFINE_BOOL(mouse_look, true, "BF3", "Mouse turns the soldier while playing (raw input, cursor captured)");
 REXCVAR_DEFINE_DOUBLE(mouse_sensitivity, 1.0, "BF3", "Mouse look sensitivity (1.0 = 0.046 degrees per count)");
 REXCVAR_DEFINE_DOUBLE(mouse_ads_sensitivity, 0.6, "BF3",
-                      "Mouse look scale while aiming down sights (the button bound to the left trigger held)");
+                      "Mouse look scale while aiming down sights (the Zoom key held)");
 REXCVAR_DEFINE_BOOL(mouse_invert_y, false, "BF3", "Invert mouse look up/down");
 
 namespace bf3::pc_mouse {
@@ -109,6 +111,8 @@ void OnRawInput(HRAWINPUT handle) {
 LRESULT CALLBACK Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
   if (msg == WM_INPUT) {
     OnRawInput(reinterpret_cast<HRAWINPUT>(lp));
+  } else if (msg == WM_MOUSEWHEEL && !g_menu_mode.load(std::memory_order_relaxed)) {
+    pc_keys::OnWheel(GET_WHEEL_DELTA_WPARAM(wp) / WHEEL_DELTA);  // weapon switch while playing
   } else if (msg == WM_SETCURSOR && g_captured.load(std::memory_order_relaxed) && LOWORD(lp) == HTCLIENT) {
     SetCursor(nullptr);
     return TRUE;
@@ -212,21 +216,20 @@ void UpdateMenuMode() {
   const std::string top = ui_state::TopScreen();
   const bool menu = top.empty() || !IsGameplay(ui_state::LiveScreens(), top);
   if (menu != g_menu_mode.exchange(menu)) REXLOG_INFO("pc mouse: {} ({})", menu ? "menu mode" : "mouse look", top);
-  SetMenuTriggerMask(menu);
   UpdateCapture(!menu && REXCVAR_GET(mouse_look));
 }
 
-// The mouse button(s) bound to the left trigger (aim down sights), as virtual keys.
+// The key(s) bound to Zoom / Aim Down Sights (pc_keys key_zoom), as virtual keys.
 bool AimHeld() {
   static std::string cached_bind;
   static std::vector<int> keys;
-  const std::string bind = rex::cvar::GetFlagByName("keybind_left_trigger");
+  const std::string bind = rex::cvar::GetFlagByName("key_zoom");
   if (bind != cached_bind) {
     cached_bind = bind;
     keys.clear();
-    for (auto [name, vk] : {std::pair{"RMB", VK_RBUTTON}, {"LMB", VK_LBUTTON}, {"MMB", VK_MBUTTON},
-                            {"Mouse4", VK_XBUTTON1}, {"Mouse5", VK_XBUTTON2}}) {
-      if (bind.find(name) != std::string::npos) keys.push_back(vk);
+    for (const std::string& name : pc_keys::SplitKeys(bind)) {
+      int vk = name == "Mouse4" ? VK_XBUTTON1 : name == "Mouse5" ? VK_XBUTTON2 : int(rex::ui::ParseVirtualKey(name));
+      if (vk) keys.push_back(vk);
     }
   }
   for (int vk : keys) {
@@ -277,6 +280,15 @@ void RunScript(const char* script) {
 }  // namespace
 
 bool MenuMode() { return g_menu_mode; }
+
+bool GameFocused() { return g_window && GetForegroundWindow() == g_window; }
+
+bool TakeCounts(double& dx, double& dy) {
+  std::lock_guard lock(g_raw_mutex);
+  dx = g_raw_dx, dy = g_raw_dy;
+  g_raw_dx = g_raw_dy = 0.0;
+  return g_captured.load(std::memory_order_relaxed);
+}
 
 }  // namespace bf3::pc_mouse
 
@@ -378,5 +390,7 @@ void Install() {
 namespace bf3::pc_mouse {
 void Install() {}
 bool MenuMode() { return false; }
+bool GameFocused() { return false; }
+bool TakeCounts(double&, double&) { return false; }
 }  // namespace bf3::pc_mouse
 #endif

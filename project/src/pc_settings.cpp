@@ -1,17 +1,17 @@
 // PC SETTINGS screen (see pc_settings.h). Adapted from the Trials HD port's KEY BINDINGS screen.
 //
-// The game sees an Xbox 360 controller driven by ReXGlue's keyboard emulation (keybind_* flags); this screen edits
-// those flags under BF3's action names, our mouse look flags (mouse_look, mouse_sensitivity, mouse_ads_sensitivity,
-// mouse_invert_y: pc_mouse.cpp), plus the display flags (fullscreen,
-// present_vsync = host vsync, max_fps = gameplay frame rate limit, read by bf_main/frame_rate.cpp). While it is open the
-// game sees an idle controller (pad_inject.h). Flag writes take the input lock exclusively: the keyboard driver copies
-// the keybind strings on every guest poll.
+// The KEYBOARD & MOUSE tab edits the key_* flags of the native PC bindings (pc_keys.cpp) by context (common, on foot,
+// vehicles, menus), the MOUSE tab our mouse look flags (mouse_look, mouse_sensitivity, mouse_ads_sensitivity,
+// mouse_invert_y: pc_mouse.cpp; vehicle_mouse_sensitivity: pc_keys.cpp), the DISPLAY tab fullscreen, present_vsync
+// (host vsync) and max_fps (gameplay frame rate limit, read by bf_main/frame_rate.cpp). While it is open the game sees
+// an idle controller (pad_inject.h). Flag writes take the input lock exclusively.
 
 #include "pc_settings.h"
 
 #include "pad_inject.h"
 #include "pc_icons.h"
-#include "pc_input.h"
+#include "pc_keys.h"
+#include "pc_mouse.h"
 #include "ui_state.h"
 
 #include <imgui.h>
@@ -42,76 +42,25 @@ REXCVAR_DEFINE_INT32(max_fps, 0, "BF3", "Frame rate limit while playing (0 = unl
 namespace bf3::pc_settings {
 namespace {
 
-struct Action {
-  const char* flag;
-  const char* label;
-  const char* pad;  // controller input it emulates
-};
-
-struct Section {
-  const char* title;
-  std::vector<Action> actions;
-};
-
-// Labels follow BF3's own controls screens. A flag may appear in several sections (Space = Jump and menu Select are
-// the same emulated A button); editing it anywhere edits it everywhere.
-const std::vector<Section>& Sections() {
-  static const std::vector<Section> sections = {
-      {"INFANTRY",
-       {{"keybind_right_trigger", "Fire", "RT"},
-        {"keybind_left_trigger", "Aim / Zoom", "LT"},
-        {"keybind_lstick_up", "Move Forward", "Left Stick Up"},
-        {"keybind_lstick_down", "Move Backward", "Left Stick Down"},
-        {"keybind_lstick_left", "Strafe Left", "Left Stick Left"},
-        {"keybind_lstick_right", "Strafe Right", "Left Stick Right"},
-        {"keybind_lstick_press", "Sprint", "L3"},
-        {"keybind_a", "Jump", "A"},
-        {"keybind_b", "Crouch / Prone (hold)", "B"},
-        {"keybind_x", "Reload / Interact", "X"},
-        {"keybind_y", "Switch Weapon", "Y"},
-        {"keybind_rstick_press", "Melee", "R3"},
-        {"keybind_right_shoulder", "Grenade", "RB"},
-        {"keybind_left_shoulder", "Spot", "LB"},
-        {"keybind_dpad_left", "Gadget 1", "D-pad Left"},
-        {"keybind_dpad_right", "Gadget 2", "D-pad Right"},
-        {"keybind_dpad_up", "D-pad Up", "D-pad Up"},
-        {"keybind_dpad_down", "Fire Mode / D-pad Down", "D-pad Down"},
-        {"keybind_back", "Scoreboard", "Back"},
-        {"keybind_start", "Pause Menu", "Start"}}},
-      {"MENUS",
-       {{"keybind_dpad_up", "Navigate Up", "D-pad Up"},
-        {"keybind_dpad_down", "Navigate Down", "D-pad Down"},
-        {"keybind_dpad_left", "Navigate Left", "D-pad Left"},
-        {"keybind_dpad_right", "Navigate Right", "D-pad Right"},
-        {"keybind_a", "Select", "A"},
-        {"keybind_b", "Back", "B"},
-        {"keybind_left_shoulder", "Previous Tab", "LB"},
-        {"keybind_right_shoulder", "Next Tab", "RB"}}},
-      {"LOOK (KEYBOARD)",
-       {{"keybind_rstick_up", "Look Up", "Right Stick Up"},
-        {"keybind_rstick_down", "Look Down", "Right Stick Down"},
-        {"keybind_rstick_left", "Look Left", "Right Stick Left"},
-        {"keybind_rstick_right", "Look Right", "Right Stick Right"}}},
-  };
-  return sections;
-}
-
-// Every flag this screen owns (and saves).
+// Every flag this screen owns (and saves): the key_* bindings (pc_keys.cpp) plus mouse and display flags.
 const std::vector<std::string>& OwnedFlags() {
   static const std::vector<std::string> flags = [] {
     std::vector<std::string> out;
-    for (const Section& s : Sections()) {
-      for (const Action& a : s.actions) {
-        if (std::find(out.begin(), out.end(), a.flag) == out.end()) out.push_back(a.flag);
-      }
-    }
-    for (const char* f : {"mouse_look", "mouse_sensitivity", "mouse_ads_sensitivity", "mouse_invert_y", "fullscreen",
-                          "present_vsync", "max_fps"}) {
+    for (const pc_keys::Action& a : pc_keys::Actions()) out.push_back(a.flag);
+    for (const char* f : {"mouse_look", "mouse_sensitivity", "mouse_ads_sensitivity", "mouse_invert_y",
+                          "vehicle_mouse_sensitivity", "fullscreen", "present_vsync", "max_fps"}) {
       out.push_back(f);
     }
     return out;
   }();
   return flags;
+}
+
+// Keys conflict within one context: common actions apply both on foot and in vehicles; menus are separate.
+bool SameContext(pc_keys::Section a, pc_keys::Section b) {
+  using S = pc_keys::Section;
+  if (a == S::kMenus || b == S::kMenus) return a == b;
+  return a == b || a == S::kCommon || b == S::kCommon;
 }
 
 constexpr int kSlots = 3;
@@ -138,8 +87,9 @@ std::string Join(const Slots& slots) {
 }
 
 std::string DefaultFor(const std::string& flag) {
-  std::string pc = PcInputDefault(flag);
-  if (!pc.empty() || IsPcInputFlag(flag)) return pc;
+  for (const pc_keys::Action& a : pc_keys::Actions()) {
+    if (flag == a.flag) return a.defaults;
+  }
   for (const auto& entry : rex::cvar::GetRegistry()) {
     if (entry.name == flag) return entry.default_value;
   }
@@ -165,12 +115,13 @@ class SettingsDialog final : public rex::ui::ImGuiDialog {
   explicit SettingsDialog(rex::ui::ImGuiDrawer* drawer) : ImGuiDialog(drawer) {
     if (g_test_tab >= 0 && g_test_tab < 3) tab_ = Tab(g_test_tab);
     for (const std::string& flag : OwnedFlags()) {
-      if (flag.rfind("keybind_", 0) == 0) working_[flag] = Split(rex::cvar::GetFlagByName(flag));
+      if (flag.rfind("key_", 0) == 0) working_[flag] = Split(rex::cvar::GetFlagByName(flag));
     }
     mouse_look_ = rex::cvar::GetFlagByName("mouse_look") == "true";
     sensitivity_ = std::stof(rex::cvar::GetFlagByName("mouse_sensitivity"));
     ads_sensitivity_ = std::stof(rex::cvar::GetFlagByName("mouse_ads_sensitivity"));
     invert_y_ = rex::cvar::GetFlagByName("mouse_invert_y") == "true";
+    vehicle_sensitivity_ = std::stof(rex::cvar::GetFlagByName("vehicle_mouse_sensitivity"));
     fullscreen_ = rex::cvar::GetFlagByName("fullscreen") == "true";
     vsync_ = rex::cvar::GetFlagByName("present_vsync") == "true";
     max_fps_ = std::atoi(rex::cvar::GetFlagByName("max_fps").c_str());
@@ -186,7 +137,7 @@ class SettingsDialog final : public rex::ui::ImGuiDialog {
   void DrawMouse(float scale);
   void DrawDisplay(float scale);
   void CaptureKey();
-  std::string UsersOf(const std::string& key, const std::string& except) const;
+  std::string UsersOf(const std::string& key, const pc_keys::Action& except) const;
   void RestoreDefaults();
   void Save();
   void RequestClose();
@@ -197,6 +148,7 @@ class SettingsDialog final : public rex::ui::ImGuiDialog {
   float sensitivity_ = 1.0f;
   float ads_sensitivity_ = 0.6f;
   bool invert_y_ = false;
+  float vehicle_sensitivity_ = 1.0f;
   bool fullscreen_ = false;
   bool vsync_ = false;
   int max_fps_ = 0;
@@ -223,23 +175,32 @@ void SettingsDialog::RequestClose() {
   });
 }
 
-std::string SettingsDialog::UsersOf(const std::string& key, const std::string& except) const {
+std::string SettingsDialog::UsersOf(const std::string& key, const pc_keys::Action& except) const {
   std::string out;
-  for (const Section& section : Sections()) {
-    if (std::string(section.title) == "MENUS") continue;  // menu actions share the infantry buttons by design
-    for (const Action& a : section.actions) {
-      if (a.flag == except) continue;
-      const Slots& slots = working_.at(a.flag);
-      if (std::find(slots.begin(), slots.end(), key) == slots.end()) continue;
-      if (out.find(a.label) != std::string::npos) continue;
-      out += (out.empty() ? "" : ", ") + std::string(a.label);
-    }
+  for (const pc_keys::Action& a : pc_keys::Actions()) {
+    if (a.flag == except.flag || !SameContext(a.section, except.section)) continue;
+    const Slots& slots = working_.at(a.flag);
+    if (std::find(slots.begin(), slots.end(), key) == slots.end()) continue;
+    out += (out.empty() ? "" : ", ") + std::string(a.label);
   }
   return out;
 }
 
 void SettingsDialog::CaptureKey() {
 #if defined(_WIN32)
+  auto bind = [&](const std::string& name) {
+    working_[listen_flag_][listen_slot_] = name;
+    for (const pc_keys::Action& a : pc_keys::Actions()) {
+      if (listen_flag_ != a.flag) continue;
+      std::string others = UsersOf(name, a);
+      status_ = others.empty() ? std::string() : name + " is also bound to " + others + ".";
+    }
+    listen_slot_ = -1;
+  };
+  if (std::string wheel = pc_keys::TakeRecentWheel(); !wheel.empty() && armed_) {
+    bind(wheel);
+    return;
+  }
   bool any_down = false;
   for (int vk = 0x01; vk <= 0xFE; ++vk) {
     if (vk == VK_SHIFT || vk == VK_CONTROL || vk == VK_MENU) continue;  // use the L/R variants
@@ -248,27 +209,23 @@ void SettingsDialog::CaptureKey() {
     if (!armed_) continue;
     armed_ = false;
     wait_release_ = true;
-    if (vk == VK_ESCAPE) {
+    if (vk == VK_ESCAPE && GetAsyncKeyState(VK_SHIFT) & 0x8000) {  // Shift+Esc cancels; Esc alone binds Esc
       listen_slot_ = -1;
       status_.clear();
       return;
     }
-    std::string name = rex::ui::VirtualKeyToString(rex::ui::VirtualKey(vk));
-    if (name.empty() && vk >= VK_LSHIFT && vk <= VK_RMENU) {
-      static constexpr int kGeneric[] = {VK_SHIFT, VK_SHIFT, VK_CONTROL, VK_CONTROL, VK_MENU, VK_MENU};
-      name = rex::ui::VirtualKeyToString(rex::ui::VirtualKey(kGeneric[vk - VK_LSHIFT]));
-    }
+    const std::string name = pc_keys::KeyName(vk);
     if (name.empty()) {
       status_ = "That key can't be bound.";
       return;
     }
-    working_[listen_flag_][listen_slot_] = name;
-    std::string others = UsersOf(name, listen_flag_);
-    status_ = others.empty() ? std::string() : name + " is also bound to " + others + ".";
-    listen_slot_ = -1;
+    bind(name);
     return;
   }
-  if (!any_down) armed_ = true;
+  if (!any_down) {
+    armed_ = true;
+    pc_keys::TakeRecentWheel();  // a notch from before listening doesn't count
+  }
 #endif
 }
 
@@ -278,6 +235,7 @@ void SettingsDialog::RestoreDefaults() {
   sensitivity_ = 1.0f;
   ads_sensitivity_ = 0.6f;
   invert_y_ = false;
+  vehicle_sensitivity_ = 1.0f;
   fullscreen_ = false;
   vsync_ = false;
   max_fps_ = 0;
@@ -315,7 +273,7 @@ bool WriteOwnedSettings(const std::filesystem::path& path, const std::map<std::s
     pending.erase(it);
   }
   if (lines.empty()) {
-    lines.push_back("# bf3 settings (PC SETTINGS screen writes keybind_*, mnk_*, fullscreen, present_vsync, max_fps)");
+    lines.push_back("# bf3 settings (PC SETTINGS screen writes key_*, mouse_*, fullscreen, present_vsync, max_fps)");
   }
   for (const auto& [flag, value] : pending) lines.push_back(render(flag, value));
   std::ofstream out(path, std::ios::trunc);
@@ -330,6 +288,7 @@ void SettingsDialog::Save() {
   values["mouse_sensitivity"] = fmt::format("{:.2f}", sensitivity_);
   values["mouse_ads_sensitivity"] = fmt::format("{:.2f}", ads_sensitivity_);
   values["mouse_invert_y"] = invert_y_ ? "true" : "false";
+  values["vehicle_mouse_sensitivity"] = fmt::format("{:.2f}", vehicle_sensitivity_);
   values["fullscreen"] = fullscreen_ ? "true" : "false";
   values["present_vsync"] = vsync_ ? "true" : "false";
   values["max_fps"] = std::to_string(max_fps_);
@@ -351,39 +310,35 @@ void SettingsDialog::Save() {
 
 void SettingsDialog::DrawBindings(float scale) {
   bool busy = listen_slot_ >= 0 || wait_release_;
-  if (!ImGui::BeginTable("##binds", 2 + kSlots, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) return;
-  ImGui::TableSetupColumn("Action", ImGuiTableColumnFlags_WidthStretch, 1.45f);
-  ImGui::TableSetupColumn("Controller", ImGuiTableColumnFlags_WidthStretch, 0.95f);
+  if (!ImGui::BeginTable("##binds", 1 + kSlots, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) return;
+  ImGui::TableSetupColumn("Action", ImGuiTableColumnFlags_WidthStretch, 1.6f);
   for (int i = 0; i < kSlots; ++i) ImGui::TableSetupColumn("Key", ImGuiTableColumnFlags_WidthStretch, 0.7f);
-  int section_index = 0;
-  for (const Section& section : Sections()) {
+  using pc_keys::Section;
+  for (Section section : {Section::kCommon, Section::kInfantry, Section::kVehicle, Section::kMenus}) {
     ImGui::TableNextRow();
     ImGui::TableSetColumnIndex(0);
     ImGui::Dummy(ImVec2(0, 6 * scale));
-    ImGui::TextColored(kOrangeV, "%s", section.title);
-    static const char* kSlotNames[kSlots] = {"KEY 1", "KEY 2", "KEY 3"};
+    ImGui::TextColored(kOrangeV, "%s", pc_keys::SectionTitle(section));
+    static const char* kSlotNames[kSlots] = {"PRIMARY", "SECONDARY", "THIRD"};
     for (int i = 0; i < kSlots; ++i) {
-      ImGui::TableSetColumnIndex(2 + i);
+      ImGui::TableSetColumnIndex(1 + i);
       ImGui::Dummy(ImVec2(0, 6 * scale));
       ImGui::TextColored(kTextDim, "%s", kSlotNames[i]);
     }
-    for (const Action& a : section.actions) {
+    for (const pc_keys::Action& a : pc_keys::Actions()) {
+      if (a.section != section) continue;
       ImGui::TableNextRow();
-      ImGui::PushID(section_index);
       ImGui::PushID(a.flag);
       ImGui::TableSetColumnIndex(0);
       ImGui::AlignTextToFramePadding();
       ImGui::TextUnformatted(a.label);
-      ImGui::TableSetColumnIndex(1);
-      ImGui::AlignTextToFramePadding();
-      ImGui::TextColored(kTextDim, "%s", a.pad);
       Slots& slots = working_[a.flag];
       for (int i = 0; i < kSlots; ++i) {
-        ImGui::TableSetColumnIndex(2 + i);
+        ImGui::TableSetColumnIndex(1 + i);
         ImGui::PushID(i);
         bool listening = listen_slot_ == i && listen_flag_ == a.flag;
         std::string label = listening ? "PRESS A KEY..." : slots[i].empty() ? "-" : slots[i];
-        std::string shared = listening || slots[i].empty() ? std::string() : UsersOf(slots[i], a.flag);
+        std::string shared = listening || slots[i].empty() ? std::string() : UsersOf(slots[i], a);
         if (listening) {
           ImGui::PushStyleColor(ImGuiCol_Button, kSlotActive);
           ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.02f, 0.03f, 0.05f, 1.0f));
@@ -406,9 +361,7 @@ void SettingsDialog::DrawBindings(float scale) {
         ImGui::PopID();
       }
       ImGui::PopID();
-      ImGui::PopID();
     }
-    ++section_index;
   }
   ImGui::EndTable();
 }
@@ -427,6 +380,10 @@ void SettingsDialog::DrawMouse(float scale) {
   ImGui::SliderFloat("##ads", &ads_sensitivity_, 0.10f, 1.50f, "%.2f");
   ImGui::Dummy(ImVec2(0, 6 * scale));
   ImGui::Checkbox("Invert vertical look", &invert_y_);
+  ImGui::Dummy(ImVec2(0, 6 * scale));
+  ImGui::TextUnformatted("Vehicles and aircraft (turret aim, pitch and roll)");
+  ImGui::SetNextItemWidth(420 * scale);
+  ImGui::SliderFloat("##veh", &vehicle_sensitivity_, 0.10f, 5.0f, "%.2f");
   ImGui::Dummy(ImVec2(0, 10 * scale));
   ImGui::TextColored(kTextDim, "Mouse look is raw input with no acceleration, like BF3 on PC. The game's own");
   ImGui::TextColored(kTextDim, "stick sensitivity and invert options only affect a controller.");
@@ -523,7 +480,7 @@ void SettingsDialog::OnDraw(ImGuiIO& io) {
     if (!busy && ImGui::IsKeyPressed(ImGuiKey_PageDown, false)) tab_ = Tab((int(tab_) + 1) % 3);
     if (!busy && ImGui::IsKeyPressed(ImGuiKey_PageUp, false)) tab_ = Tab((int(tab_) + 2) % 3);
     if (tab_ == Tab::kBindings) {
-      ImGui::TextColored(kTextDim, "Click a slot, then press a key or mouse button.  Right-click clears.  Esc cancels.");
+      ImGui::TextColored(kTextDim, "Click a slot, then press a key, mouse button or wheel.  Right-click clears.  Shift+Esc cancels.");
     } else {
       ImGui::TextUnformatted("");
     }
@@ -620,7 +577,9 @@ void Init(rex::ui::ImGuiDrawer* drawer, rex::ui::WindowedAppContext* app_context
   if (const char* t = std::getenv("BF3_TEST_PC_SETTINGS")) g_test_tab = std::atoi(t);
   g_prompt = std::make_unique<OptionsPrompt>(drawer);
   rex::ui::RegisterBind("bind_pc_settings", "F1", "Open PC SETTINGS (key bindings, mouse, display)",
-                        [] { RequestOpen(); });
+                        [] {
+                          if (pc_mouse::MenuMode()) RequestOpen();  // F1 is vehicle seat 1 while playing
+                        });
 }
 
 void RequestOpen() {

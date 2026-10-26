@@ -8,12 +8,13 @@
 //
 // The atlas is found in guest physical memory by fingerprint once the UI has loaded it (a u64 at +0x78 of the first
 // 4 KB tile, then an FNV-1a hash of that tile), copied as the pristine original, and overwritten in place through the
-// guest's 0xA0000000 view (the GPU texture cache's write watches see that and re-upload). Each keycap shows the key
-// bound to its emulated button (keybind_* flags), preferring Enter/Esc where bound, so remapping in PC SETTINGS
-// updates the prompts. No game data is stored here: only the fingerprint and glyph boxes. Start gets the PS3 R1
+// guest's 0xA0000000 view (the GPU texture cache's write watches see that and re-upload). Each keycap shows the PC key
+// for that button in the current context (pc_keys::GlyphKey: menu keys in menus, the on-foot key while playing), so
+// prompts change between menus and gameplay and follow remapping in PC SETTINGS. No game data is stored here: only the fingerprint and glyph boxes. Start gets the PS3 R1
 // glyph's place (bf_main/ui_buttons.cpp re-points its shape there; the movie mirrored the Back glyph for it).
 
 #include "pc_icons.h"
+#include "pc_keys.h"
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -49,29 +50,29 @@ enum class Art { kKey, kMouseLeft, kMouseRight, kMouseMove, kArrows };
 // Xbox glyphs in the atlas: box (x, y, w, h) and the emulated button it stands for.
 struct Glyph {
   int x, y, w, h;
-  const char* flag;  // keybind_* flag whose key is shown
+  const char* button;  // controller button whose PC key is shown (pc_keys::GlyphKey)
   Art art;
   const char* name;
   int clear_x = 0, clear_y = 0, clear_w = 0, clear_h = 0;  // area cleared first (a reused glyph's sub-image)
 };
 
 const Glyph kGlyphs[] = {
-    {2, 2, 48, 48, "keybind_dpad_up", Art::kArrows, "D-pad"},
-    {56, 2, 48, 49, "keybind_rstick_press", Art::kKey, "Stick"},  // bare stick (e.g. SHOW BATTLE FEED)
-    {376, 2, 47, 44, "keybind_lstick_press", Art::kKey, "LS"},
-    {482, 2, 46, 45, "keybind_right_trigger", Art::kKey, "RT"},
-    {534, 2, 46, 45, "keybind_left_trigger", Art::kKey, "LT"},
-    {585, 0, 47, 44, "keybind_rstick_press", Art::kKey, "RS"},
-    {639, 2, 42, 41, "keybind_y", Art::kKey, "Y"},
-    {687, 2, 42, 41, "keybind_x", Art::kKey, "X"},
-    {735, 2, 42, 41, "keybind_b", Art::kKey, "B"},
-    {783, 2, 42, 41, "keybind_a", Art::kKey, "A"},
-    {1129, 2, 46, 39, "keybind_back", Art::kKey, "Back"},
-    {1181, 2, 50, 37, "keybind_left_shoulder", Art::kKey, "LB"},
-    {1235, 2, 50, 37, "keybind_right_shoulder", Art::kKey, "RB"},
+    {2, 2, 48, 48, "D-pad", Art::kArrows, "D-pad"},
+    {56, 2, 48, 49, "Stick", Art::kKey, "Stick"},  // bare stick (e.g. SHOW BATTLE FEED)
+    {376, 2, 47, 44, "LS", Art::kKey, "LS"},
+    {482, 2, 46, 45, "RT", Art::kKey, "RT"},
+    {534, 2, 46, 45, "LT", Art::kKey, "LT"},
+    {585, 0, 47, 44, "RS", Art::kKey, "RS"},
+    {639, 2, 42, 41, "Y", Art::kKey, "Y"},
+    {687, 2, 42, 41, "X", Art::kKey, "X"},
+    {735, 2, 42, 41, "B", Art::kKey, "B"},
+    {783, 2, 42, 41, "A", Art::kKey, "A"},
+    {1129, 2, 46, 39, "Back", Art::kKey, "Back"},
+    {1181, 2, 50, 37, "LB", Art::kKey, "LB"},
+    {1235, 2, 50, 37, "RB", Art::kKey, "RB"},
     // Start: the movie draws it as the mirrored Back glyph; bf_main/ui_buttons.cpp points it at the PS3 R1 glyph's
     // sub-image (1021..1072 x 0..42) instead, drawn like Back's (+2, +2 inside its sub-image).
-    {1023, 2, 46, 39, "keybind_start", Art::kKey, "Start", 1021, 0, 51, 42},
+    {1023, 2, 46, 39, "Start", Art::kKey, "Start", 1021, 0, 51, 42},
 };
 
 // Same addressing as the GPU (XGAddress2DTiledOffset), in texels, for 32bpp.
@@ -100,23 +101,8 @@ uint64_t LoadBe64(const uint8_t* p) {
 
 // ---- key labels -----------------------------------------------------------------------------------------------
 
-std::vector<std::string> Keys(const char* flag) {
-  std::vector<std::string> out;
-  std::stringstream ss(rex::cvar::GetFlagByName(flag));
-  for (std::string k; std::getline(ss, k, ',');) {
-    if (!k.empty()) out.push_back(k);
-  }
-  return out;
-}
-
-// The key a prompt shows: Enter/Esc when bound (the menu keys), else the first binding.
-std::string DisplayKey(const char* flag) {
-  std::vector<std::string> keys = Keys(flag);
-  for (const char* preferred : {"Return", "Escape"}) {
-    if (std::find(keys.begin(), keys.end(), preferred) != keys.end()) return preferred;
-  }
-  return keys.empty() ? std::string() : keys.front();
-}
+// The key a prompt shows: the menu binding in menus, the on-foot key while playing (pc_keys.cpp).
+std::string DisplayKey(const char* button) { return pc_keys::GlyphKey(button); }
 
 std::string Label(const std::string& key) {
   static const std::pair<const char*, const char*> kNames[] = {
@@ -124,6 +110,7 @@ std::string Label(const std::string& key) {
       {"Shift", "SHIFT"},  {"Tab", "TAB"},         {"Menu", "ALT"},      {"Alt", "ALT"},        {"Delete", "DEL"},
       {"Insert", "INS"},   {"PageUp", "PGUP"},     {"PageDown", "PGDN"}, {"Home", "HOME"},      {"End", "END"},
       {"CapsLock", "CAPS"}, {"OemTilde", "~"},     {"Backtick", "~"},
+      {"WheelUp", "WHEEL"}, {"WheelDown", "WHEEL"}, {"Mouse4", "M4"},    {"Mouse5", "M5"},
   };
   for (auto [name, label] : kNames) {
     if (key == name) return label;
@@ -322,7 +309,7 @@ std::vector<uint8_t> Patched(const std::vector<uint8_t>& pristine) {
         std::memset(out.data() + size_t(TiledOffset(g.clear_x + x, g.clear_y + y)) * 4, 0, 4);
       }
     }
-    std::string key = DisplayKey(g.flag);
+    std::string key = DisplayKey(g.button);
     std::vector<uint32_t> px = g.art == Art::kArrows ? Render(g, "") : Render(g, key);
     for (int y = 0; y < g.h; ++y) {
       for (int x = 0; x < g.w; ++x) {
@@ -337,7 +324,7 @@ std::vector<uint8_t> Patched(const std::vector<uint8_t>& pristine) {
 
 std::string BindingsKey() {
   std::string out;
-  for (const Glyph& g : kGlyphs) out += DisplayKey(g.flag) + ";";
+  for (const Glyph& g : kGlyphs) out += DisplayKey(g.button) + ";";
   return out;
 }
 

@@ -18,10 +18,6 @@ std::shared_mutex& InputLock();
 void SetGameInputBlocked(bool blocked);
 bool GameInputBlocked();
 
-// While set, the game sees no triggers (menu mouse mode: the mouse buttons are bound to the triggers, but in menus a
-// click goes to the menu as a click; see pc_mouse.cpp).
-void SetMenuTriggerMask(bool masked);
-
 // While active, controller 0's right stick reads (rx, ry) (aim_scan.cpp drives it).
 void SetRightStickOverride(bool active, int16_t rx = 0, int16_t ry = 0);
 

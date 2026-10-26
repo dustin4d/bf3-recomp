@@ -1,4 +1,5 @@
-// Guest controller input hook: input lock, input blocking for host screens, and scripted test input.
+// Guest controller input hook: input lock, input blocking for host screens, the keyboard's menu buttons
+// (pc_keys.cpp; controller 0 always reads as connected, the keyboard's virtual pad), and scripted test input.
 //
 // Scripted controller input for automated tests, independent of window focus:
 // BF3_PAD_SCRIPT="<step>;<step>;..." drives controller 0. Steps run in order:
@@ -30,6 +31,7 @@
 #include <vector>
 
 #include "iat_patch.h"
+#include "pc_keys.h"
 #include "ui_state.h"
 
 namespace bf3 {
@@ -48,7 +50,6 @@ struct Step {
 GuestFunc g_original = nullptr;
 std::shared_mutex g_input_lock;
 std::atomic<bool> g_blocked{false};
-std::atomic<bool> g_mask_triggers{false};
 std::atomic<uint16_t> g_pulse_buttons{0};
 std::atomic<uint64_t> g_pulse_until{0};
 std::vector<Step> g_steps;
@@ -129,8 +130,19 @@ void ControllerState(PPCContext& ctx, uint8_t* base) {
   if (g_blocked.load(std::memory_order_relaxed) && ctx.r3.u32 == 0) {
     std::memset(base + state + 4, 0, 12);  // keep packet number, idle buttons/triggers/sticks
   }
-  if (g_mask_triggers.load(std::memory_order_relaxed) && ctx.r3.u32 == 0) {
-    std::memset(base + state + 6, 0, 2);  // X_INPUT_GAMEPAD: +0 buttons, +2 left trigger, +3 right trigger
+  if (user == 0 && ctx.r3.u32 != 0) {
+    // No controller: controller 0 is the keyboard's virtual pad (connected, idle), so the game never asks for one.
+    std::memset(base + state, 0, 16);
+    ctx.r3.u64 = 0;
+  }
+  if (user == 0 && !g_blocked.load(std::memory_order_relaxed)) {
+    if (const uint16_t keys = pc_keys::PadButtons()) {
+      uint8_t* p = base + state;
+      const uint16_t now = uint16_t(p[4] << 8 | p[5]) | keys;
+      p[4] = uint8_t(now >> 8), p[5] = uint8_t(now);
+      const uint32_t packet = g_packet.fetch_add(1);
+      p[0] = uint8_t(packet >> 24), p[1] = uint8_t(packet >> 16), p[2] = uint8_t(packet >> 8), p[3] = uint8_t(packet);
+    }
   }
   if (const uint16_t pulse = g_pulse_buttons.load(std::memory_order_relaxed); pulse && ctx.r3.u32 == 0) {
     if (GetTickCount64() < g_pulse_until.load(std::memory_order_relaxed)) {
@@ -243,8 +255,6 @@ void SetGameInputBlocked(bool blocked) { g_blocked = blocked; }
 
 bool GameInputBlocked() { return g_blocked; }
 
-void SetMenuTriggerMask(bool masked) { g_mask_triggers = masked; }
-
 void SetRightStickOverride(bool active, int16_t rx, int16_t ry) {
   g_rstick_rx = rx;
   g_rstick_ry = ry;
@@ -292,7 +302,6 @@ std::shared_mutex g_input_lock;
 void InstallPadInject() {}
 std::shared_mutex& InputLock() { return g_input_lock; }
 void SetGameInputBlocked(bool) {}
-void SetMenuTriggerMask(bool) {}
 void PulseButtons(uint16_t, uint32_t) {}
 void SetRightStickOverride(bool, int16_t, int16_t) {}
 }  // namespace bf3

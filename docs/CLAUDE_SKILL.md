@@ -195,6 +195,7 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
 | BF.Main FadeManager (0x840BAE54) fade in sub_83247D38 | `src/bf_main/fade_fix.cpp`: if a FadeEntity's StartFaded (sub_83247E10, name 0x82DCF6C0) isn't followed by a fade in within 5 s, fade in (1 s) from the level manager update (level_boot.cpp sub_833AF040) | In MP levels started from PRACTICE the level's FadeEntity never gets its FadeIn event: the color grading LUT job (sub_83C8EB28, matrix from sub_83D1B078) used an all-zero matrix and the UI was faded too, so the screen stayed black |
 | BF.Main server team (ServerPlayer::setTeam sub_833CACD0, team at player+0x324) | `src/bf_main/practice.cpp`: the player that entered the level (ServerPlayerEnteredLevelMessage +0x28, seen in the dispatcher sub_83026CB8) gets team 1 (BF3_TEAM=2: RU) when the spawn screen appears; the server's network handler sub_836C7AA0 also applies NetworkSelectTeamMessage (+0x38) | Without a Blaze game nobody assigns a team: the player stays TeamNeutral, the spawn screen shows ID_M_NEUTRAL / "DEPLOY AS undefined" / kitItem_N and DEPLOY does nothing. sub_836C7AA0 ignores NetworkSelectTeamMessage in this build |
 | BF.Main ServerPreRoundEntity (type 0x8418958C, check sub_837D3BE0) | `src/bf_main/practice.cpp` SoloRound: at the spawn screen, every pre-round entity gets data +0x60/+0x6C = 1 and its copies +0xA4 = 1 (start players), +0xA8 = 0 (restart players), and the round starts (+0xB4 = +0xAC, +0xB8 |= 0x80, sub_83838328(entity, 1)) | TDM needs 8 players before the round starts; in pre-round the soldier can turn but not walk or fire |
+| BF.Main entry input mapper sub_8324E938 (called from client player input sub_832303C0) | Native PC keys: `src/pc_keys.cpp` (bindings `key_*`, BF3 PC defaults, per context) + `src/bf_main/pc_concepts.cpp` (hook): after the mapper fills the local player's EntryInputState, the concepts the keys hold are merged into every action the entry's own concept map binds them to (analog: stronger wins; digital: OR; bound mask set). Menus: keys press pad buttons (pad_inject.cpp, controller 0 always connected); Esc = Back in menus, Start (game menu) while playing; keys held across a context change are ignored until released. ReXGlue mnk_mode forced off, its F3/F4/F7 overlay hotkeys moved to F10/F12/F11, PC SETTINGS F1 only in menus | User: PC-native controls in every context, BF3 PC keybindings, Esc as universal back. The Xenon data binds concepts to pad inputs only (keyboard concept bindings never fire); per-entry maps (soldier, each vehicle seat) translate concepts to actions, so feeding concepts gives vehicles their own layout from game data |
 | BF.Main level list filter sub_837DEC28 (data source sub_837E9F80 -> sub_837E98D0 -> sub_837E4E38); DevScreen movie via inflate sub_8318B500; LoadLevel sub_836EE268 | Native PRACTICE page: `src/bf_main/practice_menu.cpp` (while DevScreen is on top, category 3 admits only MP_Subway, 1/2 nothing; column titles rewritten in the inflated movie), `main_menu.cpp` (header DEVELOPER MENU -> PRACTICE, MENU SHORTCUTS StaticItems count 0), `level_boot.cpp` (LoadLevel from the page = Metro TDM), `pad_inject.cpp` (left/right masked on DevScreen) | Replaces the ImGui launcher drawn over DevScreen (user, 2026-10-26: native page, one mode, one map) |
 | BF.Main level data source sub_837E9F80 (key 0xB142F75C), row field setter sub_8328F408, flow output node sub_8328E558, UI manager sub_83280730 vtable +0x60 | PRACTICE team step: `src/bf_main/practice_menu.cpp` (choosing the map fills the TEAM column List_05 with US MARINES / RUSSIAN ARMY, refreshes the key, host taps Right; the team is the row last highlighted, since List_05's Release hands LoadLevel a dangling string), `pad_inject.cpp` (the Right tap) | User, 2026-10-26: team choice after the map, before loading |
 
@@ -270,13 +271,39 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
   OptionsNavigationXenonScreen + Options{Controls,Gameplay,Audio,Video}ConsoleScreen, ExtraMenuScreen,
   GoOnlineLoadingScreen (Multiplayer). Multiplayer/Co-op/My Soldier: PopupGeneric "sign in to Xbox LIVE".
   Pad script: `wait:StartScreen#2;3000:START;3000:START;3000:START;wait:MainMenuScreen;4000:DOWN;...`
-- PC SETTINGS (src/pc_settings.cpp): F1, or the prompt shown bottom-right while any Options*Screen is on top.
-  Tabs KEYBOARD & MOUSE (BF3 action names over the emulated pad buttons, 3 key slots, conflict marking), MOUSE
-  (mnk_mouse, mnk_sensitivity), DISPLAY (fullscreen, vsync). Saves only those keys to bf3.toml. Writes take
-  InputLock() exclusively (pad_inject.cpp holds it shared around every guest XamInputGetState); game input is blocked
-  while the screen is open. BF3_TEST_PC_SETTINGS=<tab> opens it automatically on the first Options screen (tests).
-  Known gap: menu and infantry actions share emulated buttons (Esc = Back and Crouch); needs context-aware binds
-  once in-game screens are known. Mouse look also captures the cursor in menus.
+- PC SETTINGS (src/pc_settings.cpp): F1 in menus, or the prompt shown bottom-right while any Options*Screen is on top.
+  Tabs KEYBOARD & MOUSE (pc_keys actions by context: COMMON / ON FOOT / VEHICLES AND AIRCRAFT / MENUS, 3 key slots,
+  conflict marking within a context, wheel bindable, Shift+Esc cancels a capture), MOUSE (mouse_look, sensitivities,
+  vehicle_mouse_sensitivity, invert), DISPLAY. Saves only those keys to bf3.toml. Game input is blocked while open.
+- Native PC input (2026-10-26, src/pc_keys.cpp, src/bf_main/pc_concepts.cpp). Guest input path: pad device
+  PadDevice_Poll sub_832479F8 (XamInputGetState via 0x838D3998, state copy at device+0xC) -> input cache (concept
+  source, vtable 0x82DCF628; byte disable at +0, float per concept at +4 + 4*concept; getters sub_8324B728 analog /
+  sub_8324C130 digital walk each concept's InputActionData list {data*, concept}: pad, keyboard (+0x10 device, byte
+  per key), mouse (+0x18), motion) -> per-entry mapper sub_8324E938 -> EntryInputState (analog EIA 0..9 at +0x10,
+  digital bits at +0x1D8, bound mask +0x1C8; setters sub_83855600 / sub_83853A50 / sub_83855578).
+  - InputConceptIdentifiers (InputConceptIdentifiers_ToString 0x83F10E18): 0 MoveFB, 1 MoveLR, 2-5 MoveForward/
+    Backward/Left/Right, 6 Yaw, 7 Pitch, 8 Roll, 10 Fire, 11 AltFire, 12 FireCountermeasure, 13 Reload, 14 Zoom,
+    15 ToggleCamera, 16 Sprint, 17 Crawl, 18 ToggleWeaponLight, 19 Jump, 20 Crouch, 21 CrouchOnHold, 22 Prone,
+    23 Interact, 26 BreathControl, 27 Parachute, 28 SwitchInventoryItem, 29-37 SelectInventoryItem1-9, 43 Melee,
+    44 ThrowGrenade, 45 CycleFireMode, 46 ChangeVehicle, 47 Brake, 48 HandBrake, 53 NextPosition, 54-61
+    SelectPosition1-8, 64 MapZoom, 68 Scoreboard, 69 Menu, 72/73 CommMenu1/2, 78 Back, ... 123 = ConceptSize.
+  - EntryInputActionEnum (reflection fields 0x841A80D0): 0 Throttle, 1 Strafe, 2 Brake, 3 SwitchPrimaryInventory,
+    4 Yaw, 5 Pitch, 6 Roll, 7 Fire, 8/9 CameraPitch/Yaw, 10 FireCountermeasure, 11 Zoom, 12 Jump, 13 ChangePose,
+    14 Prone, 15 Reload, 16-24 SelectWeapon1-9, 25 SwitchPrimaryWeapon, 26 GrenadeLauncher, 27 StaticGadget,
+    28/29 DynamicGadget1/2, 30 Melee, 31 ThrowGrenade, 32 Sprint, 33 CrawlSpeed, 34 CycleFireMode, 35 Interact,
+    36 ToggleParachute, 37 CycleRadioChannel, 38 ToggleCamera, 39 ScoreboardMenu, 40 GearUp(OrToggleWeaponLight),
+    41 GearDown, 42 Clutch, 43 HandBrake, 44 GiveOrder, 45 BreathControl, 46 MapZoom, 47 ChangeVehicle,
+    48 ChangeEntry, 49-56 ChangeEntry1-8, 57 3DMap, 58/59 (Leader)CommoRose, 60-65 Quicktime*, 128 none.
+  - Soldier map (eia:concept): 0:0 1:1 3:28 4:6 5:7 7:10 11:14 12:19 13:17 14:22 15:13 16-24:29-37 25:38 ...
+    30:43 31:44 32:16 33:20 34:45 35:23 36:27 37:19 38:15 40:18 42:21 45:26 46:64 47:46 48:53 49-56:54-61
+    58:72 59:73. So C (Crouch+CrouchOnHold) = hold crouch, X (Crawl -> ChangePose) = toggle crouch.
+  - Verified on Metro TDM (2026-10-26, BF3_KEY_SCRIPT): W walks, Space jumps, C holds crouch, X toggles crouch,
+    Z prone/up, 2 pistol / 1 rifle, R reload, Esc opens IngameMenuMP and Esc closes it, main menu arrows/Enter/Esc.
+    Not verified: vehicles (none on Metro TDM; mouse -> Yaw/Pitch rate concepts, vehicle_mouse_sensitivity), keycap
+    icons per context, 3-6 gadget slots, Q spot, F knife, G grenade, T light, V fire mode by eye.
+  - Tests: BF3_KEY_SCRIPT="wait:play;<ms>:<Key>[+Key][:<hold>];..." (SendInput to the focused window; the user's real
+    keys also count), logs "pc keys: context ..." and "pc keys: concepts ..."; BF3_INPUT_TRACE=1 logs each mapper's
+    eia:concept map once (a new vehicle type shows its map).
 - Level boot (BF3_LEVEL=<level>[:<layer inclusion>], e.g. MP_Subway or MP_Subway:GameMode=ConquestSmall0):
   - Default: boot the front end, then switch (level_boot.cpp, hook of the level manager update sub_833AF040): 3 s after
     CoreEnteredIngameMessage it feeds sub_833B1500 a ServerLoadLevelMessageBase built in guest memory (allocator
@@ -456,7 +483,7 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
   Feed "YOU ARE OFFLINE"). Title screen at ~50 s, START -> main menu. Scripted input:
   `BF3_PAD_SCRIPT="55000:START;60000:START;66000:A" scripts/win_run.sh 95 info` (src/pad_inject.cpp hooks
   bf3_BF_Main.dll's import of __imp__XamInputGetState once the DLL loads; ms counted from the first input poll).
-  PC keyboard/mouse defaults in src/pc_input.cpp (mnk_mode + mnk_mouse, BF3-PC-style binds).
+  PC keyboard/mouse: native since 2026-10-26 (pc_keys.cpp, see above); mnk_mode is off.
 - STATUS 2026-10-25: boots to the title screen ("PRESS START TO BEGIN") with the patched GPU plugin; no job-system
   errors. The memcpy-hook workaround (src/gpu_readback_fix.cpp) was removed, superseded by the plugin patch.
 - STATUS 2026-10-24 (end of session 1): boots through launcher -> BF.Main -> Engine.BuildInfo, renders the loading

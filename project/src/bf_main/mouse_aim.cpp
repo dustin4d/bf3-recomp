@@ -15,6 +15,8 @@
 
 #include "bf3_pch.h"
 
+#include "pc_concepts.h"
+
 #include <windows.h>
 
 #include <atomic>
@@ -53,7 +55,8 @@ extern "C" REX_FUNC(sub_832EC788) {
 extern "C" REX_FUNC(sub_83264488) {
   const uint32_t aimer = ctx.r3.u32;
   const uint32_t state = g_player_aim_state.load(std::memory_order_relaxed);
-  const bool local = aimer && state && REX_LOAD_U32(state + 8) == aimer;
+  // In a vehicle the mouse goes through the vehicle's look concepts instead (pc_concepts.cpp).
+  const bool local = aimer && state && REX_LOAD_U32(state + 8) == aimer && bf3_main::LocalOnFoot();
   if (!local) {
     __imp__sub_83264488(ctx, base);
     return;

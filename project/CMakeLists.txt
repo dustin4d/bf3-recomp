@@ -22,6 +22,7 @@ set(BF3_SOURCES
     src/kernel_fixes.cpp
     src/pc_icons.cpp
     src/pc_mouse.cpp
+    src/pc_keys.cpp
     src/local_profile.cpp
     src/pc_settings.cpp
     src/audio_capture.cpp
@@ -56,6 +57,7 @@ if(TARGET bf3_BF_Main)
         src/bf_main/main_menu.cpp
         src/bf_main/boot_flow.cpp
         src/bf_main/local_online.cpp
+        src/bf_main/pc_concepts.cpp
     )
 endif()
 

@@ -13,6 +13,7 @@
 #include "pc_settings.h"
 #include "pad_inject.h"
 #include "pc_input.h"
+#include "pc_keys.h"
 
 namespace bf3 {
 void InstallDiagnostics();  // crash_trace.cpp
@@ -56,6 +57,7 @@ class Bf3App : public rex::ReXApp {
 
   void OnPostSetup() override {
     bf3::ApplyPcDisplayDefaults();
+    bf3::pc_keys::Install();
     bf3::InstallPadInject();
     bf3::InstallAudioCapture();
     bf3::InstallAimScan();
@@ -70,6 +72,7 @@ class Bf3App : public rex::ReXApp {
 
   void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {
     bf3::pc_settings::Init(drawer, &app_context(), config_path_);
+    bf3::ApplyPcBindDefaults();
     bf3::local_profile::CreateDialogs(drawer);
   }
   // std::unique_ptr<rex::ui::ImGuiDialog> CreateAchievementsOverlay() override;

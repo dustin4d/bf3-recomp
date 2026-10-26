@@ -9,4 +9,11 @@ void Install();
 // True while the mouse drives the menus (cursor free, no mouse look).
 bool MenuMode();
 
+// The game window is the foreground window.
+bool GameFocused();
+
+// Raw mouse counts gathered since the last take (x right, y down) while the cursor is captured; false if not
+// captured. Vehicles take them through pc_keys (bf3_pc_concepts); on foot bf3_mouse_look_delta does.
+bool TakeCounts(double& dx, double& dy);
+
 }  // namespace bf3::pc_mouse
