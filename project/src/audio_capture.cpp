@@ -41,6 +41,9 @@ uint64_t g_frames = 0, g_max_frames = 0;
 uint64_t g_second_start = 0;
 int g_second_frames = 0, g_second_silent = 0;
 float g_second_peak = 0;
+LARGE_INTEGER g_last_submit = {}, g_qpf = {};
+double g_second_max_gap_ms = 0;
+int g_second_long_gaps = 0;  // gaps over 3 frames (16 ms)
 
 void WriteHeader(FILE* f, uint64_t frames) {
   const uint32_t data = uint32_t(frames * kSamples * kChannels * 4);
@@ -87,14 +90,25 @@ void HookedSubmit(PPCContext& ctx, uint8_t* base) {
         REXLOG_INFO("audio capture: done, {} frames", g_frames);
       }
     }
+    LARGE_INTEGER t;
+    QueryPerformanceCounter(&t);
+    if (!g_qpf.QuadPart) QueryPerformanceFrequency(&g_qpf);
+    if (g_last_submit.QuadPart) {
+      const double gap = double(t.QuadPart - g_last_submit.QuadPart) * 1000.0 / double(g_qpf.QuadPart);
+      g_second_max_gap_ms = std::max(g_second_max_gap_ms, gap);
+      if (gap > 16.0) ++g_second_long_gaps;
+    }
+    g_last_submit = t;
     const uint64_t now = GetTickCount64();
     if (!g_second_start) g_second_start = now;
     ++g_second_frames;
     if (peak < 1e-5f) ++g_second_silent;
     g_second_peak = std::max(g_second_peak, peak);
     if (now - g_second_start >= 1000) {
-      REXLOG_INFO("audio: {} frames/s (want 187.5), {} silent, peak {:.3f}", g_second_frames, g_second_silent,
-                  g_second_peak);
+      REXLOG_INFO("audio: {} frames/s (want 187.5), {} silent, peak {:.3f}, max gap {:.1f} ms, {} gaps > 16 ms",
+                  g_second_frames, g_second_silent, g_second_peak, g_second_max_gap_ms, g_second_long_gaps);
+      g_second_max_gap_ms = 0;
+      g_second_long_gaps = 0;
       g_second_start = now;
       g_second_frames = g_second_silent = 0;
       g_second_peak = 0;

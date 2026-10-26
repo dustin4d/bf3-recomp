@@ -45,6 +45,11 @@ includes = []
 # undeclared, the longjmp just returned and luaD_throw fell through to panic + exit(1) (via doexit 0x838B5860).
 setjmp_address = 0x83DF2720   # mflr/mfcr, stfd f14.. into jmp_buf at r3
 longjmp_address = 0x83DF29F0  # (jmp_buf, val), val 0 -> 1
+# mfmsr/mtmsrd r13 bracket every lwarx/stwcx. in BF.Main (interrupts off on the local core). Emulated, they take
+# ReXGlue's process-wide global_critical_region mutex, which serialized the job system (main thread mostly waiting on
+# it in sub_8346F470). The atomics are compare-and-swap anyway, and on hardware the bracket excludes nothing across
+# cores, so they are dropped.
+skip_msr = true
 
 # Leaf functions in gaps between .pdata entries, reached only by a tail-call b (codegen "target not in any function").
 [modules.functions]
