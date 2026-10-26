@@ -7,6 +7,8 @@
 
 #include "bf3_pch.h"
 
+#include "mouse_aim.h"
+
 #include <rex/cvar.h>
 
 #include <algorithm>
@@ -79,6 +81,7 @@ extern "C" REX_FUNC(sub_83838CF0) {
     ctx.f1.f64 = max_fps == 0.0 ? 0.0 : 1.0 / max_fps;
   }
   __imp__sub_83838CF0(ctx, base);
+  bf3_main::SampleMouseLook(ctx, base);  // the next frame starts here
 }
 
 // Texture bind sub_8313C6E0(renderer r3, slot r4, texture r5, srgb r6) calls the texture's vtable +0x38. With the

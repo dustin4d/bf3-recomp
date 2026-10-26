@@ -52,6 +52,7 @@ constexpr double kRadiansPerCount = 0.0008;
 std::mutex g_raw_mutex;
 double g_raw_dx = 0.0, g_raw_dy = 0.0;
 std::atomic<bool> g_captured{false};
+std::atomic<bool> g_feeding{false};  // BF3_MOUSE_FEED test: counts arrive without a captured cursor
 
 using EventFn = void (*)(uint32_t type, float nx, float ny, uint32_t button, float scroll);
 
@@ -302,7 +303,7 @@ extern "C" __declspec(dllexport) bool bf3_mouse_look_delta(float* yaw, float* pi
     dx = g_raw_dx, dy = g_raw_dy;
     g_raw_dx = g_raw_dy = 0.0;
   }
-  if (!g_captured.load(std::memory_order_relaxed)) {
+  if (!g_captured.load(std::memory_order_relaxed) && !g_feeding.load(std::memory_order_relaxed)) {
     *yaw = *pitch = 0.0f;
     return false;
   }
@@ -365,6 +366,44 @@ void Install() {
                 return 0;
               },
               const_cast<char*>(test), 0, nullptr);
+        }
+        // BF3_MOUSE_FEED="<x counts/s>,<y counts/s>,<ms>[;...]": 6 s into mouse look (no focus or capture needed), adds
+        // raw counts at a steady rate straight into the look accumulator, 2 s between groups (smoothness tests).
+        if (const char* feed = std::getenv("BF3_MOUSE_FEED"); feed && *feed) {
+          CreateThread(
+              nullptr, 0,
+              [](LPVOID p) -> DWORD {
+                while (g_menu_mode) Sleep(100);
+                Sleep(6000);
+                std::string all = static_cast<const char*>(p);
+                for (size_t start = 0; start < all.size();) {
+                  size_t end = all.find(';', start);
+                  const std::string group = all.substr(start, end == std::string::npos ? std::string::npos : end - start);
+                  start = end == std::string::npos ? all.size() : end + 1;
+                  double rx = 0, ry = 0;
+                  int ms = 0;
+                  std::sscanf(group.c_str(), "%lf,%lf,%d", &rx, &ry, &ms);
+                  REXLOG_INFO("pc mouse: feed ({}, {}) counts/s for {} ms", rx, ry, ms);
+                  g_feeding = true;
+                  const ULONGLONG t0 = GetTickCount64();
+                  LARGE_INTEGER freq, last, now;
+                  QueryPerformanceFrequency(&freq);
+                  QueryPerformanceCounter(&last);
+                  while (GetTickCount64() - t0 < ULONGLONG(ms)) {
+                    Sleep(1);
+                    QueryPerformanceCounter(&now);
+                    const double dt = double(now.QuadPart - last.QuadPart) / double(freq.QuadPart);
+                    last = now;
+                    std::lock_guard lock(g_raw_mutex);
+                    g_raw_dx += rx * dt;
+                    g_raw_dy += ry * dt;
+                  }
+                  Sleep(2000);
+                  g_feeding = false;
+                }
+                return 0;
+              },
+              const_cast<char*>(feed), 0, nullptr);
         }
         if (const char* script = std::getenv("BF3_MOUSE_SCRIPT"); script && *script) {
           CreateThread(
