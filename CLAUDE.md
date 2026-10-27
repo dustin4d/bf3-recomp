@@ -1,9 +1,18 @@
 # Battlefield 3 (Xbox 360) static recomp
 
-Goal: a native Windows x64 build of Battlefield 3 (Xbox 360), statically recompiled with ReXGlue.
-Spec, milestone 1 (user, 2026-10-24): boot to the main menu, then working keyboard/mouse input in the menus.
-Campaign (Disc 2) and gameplay come later. Test runs: Claude may launch, kill and screenshot bf3.exe from
-C:\Games\BF3-recomp.
+Goal (user, 2026-10-27): a functional decompilation of Battlefield 3 (Xbox 360) into native, typed C++ source,
+rebuilt for Windows with no dependency on the emulated Xbox runtime; only the game discs required.
+Behaviour-equivalent and verified by tests, not matching. Private proof of concept, no distribution: licensing is
+not a concern (Havok and Scaleform are decompiled from the game's own statically linked copy).
+- Phase 1 (done 2026-10-27): ReXGlue static recomp boots straight to the main menu, Metro TDM playable with native PC
+  keyboard/mouse, HD Content pack loaded. It is now the scaffolding: the game must stay bootable at every step, native
+  code replaces recompiled functions as overrides (define sub_X in project/src/, the original stays __imp__sub_X).
+- v0.1 alpha: a fully decompiled, working Team Deathmatch on Operation Metro (MP_Subway). Nothing else (campaign,
+  other maps, modes) until then. Scope = the functions Metro TDM executes (coverage hit set, docs/DECOMP.md).
+- Later: possibly Rust or a performance rework of the C++ (network I/O, servers with hundreds of players), so
+  decompiled code is idiomatic and refactorable, not a transcription of PowerPC.
+- Leverage ReXGlue: refactor its generated C++, reuse its codegen analysis, extend it via patches/rexglue/.
+Test runs: Claude may launch, kill and screenshot bf3.exe from C:\Games\BF3-recomp.
 
 ## Environment
 - Arch on WSL2. Codegen, analysis and compile checks run in WSL; boots and tests run on the Windows host.
