@@ -18,6 +18,9 @@ Command line:
                                         deploy + launch the game (scripts/win_run.sh, in the background), wait for the
                                         API; with --metro, go straight to Metro TDM and deploy (no menu clicks)
   bf3dbg.py tp <spot|x,y,z[,heading]>  teleport (spots: sunny_street, balcony) and set the spot's aim
+  bf3dbg.py bones [frames] [--dwords n | --count bones] [--bones 0,1,2] [--pass i] [--jump deg] [--csv out]
+                                        skinning bone matrices the GPU received, per frame (our GPU plugin's
+                                        gpu_vsconst_* cvars; default: the 3P body's 53-bone packet)
   bf3dbg.py metro [--team ru] [--kit 0] [--spot name] [--walk ms] [--look yaw pitch]
                                         the Metro TDM recipe on an already running game
 
@@ -26,6 +29,7 @@ As a module: `from bf3dbg import Bf3` -> Bf3().cmd("status"), .wait_phase("playi
 
 import argparse
 import json
+import math
 import re
 import os
 import socket
@@ -133,6 +137,37 @@ class Bf3:
             raise Bf3Error(f"shot: {reply.get('error')}")
         write_png(path, reply["width"], reply["height"], data)
         return path
+
+    def bones(self, frames=30, dwords=656, timeout=20.0, log_path=os.path.join(ROOT, "logs", "win-run.log")):
+        """Skinning constants the GPU received, per frame: needs our GPU plugin's diagnostic cvars (patch-in-progress
+        in tools/rexglue-src). Logs every SET_SHADER_CONSTANTS packet at c0 with `dwords` dwords for `frames` swaps,
+        then parses them from the run log. Returns [[packet, ...] per frame], packet = [bone slots], slot = 3 rows of
+        [x, y, z, w] (rotation in xyz, translation in w); the slots start at c5 (c0-c4 are the draw's header)."""
+        start = os.path.getsize(log_path)
+        self.cmd(f"cvar gpu_vsconst_packet_dwords {dwords}")
+        self.cmd(f"cvar gpu_vsconst_trace {frames}")
+        deadline = time.time() + timeout
+        try:
+            while True:
+                with open(log_path, "rb") as f:
+                    f.seek(start)
+                    text = f.read().decode(errors="replace")
+                if text.count("vsconst frame") >= frames or time.time() >= deadline:
+                    break
+                time.sleep(0.25)
+        finally:
+            self.cmd("cvar gpu_vsconst_packet_dwords 0")
+        out, cur = [], []
+        for line in text.splitlines():
+            if "vsconst frame" in line:
+                out.append(cur)
+                cur = []
+            elif "vspacket" in line:
+                words = line.split("vspacket", 1)[1].split()
+                regs = [[struct.unpack("<f", struct.pack("<I", int(w[i:i + 8], 16)))[0] for i in range(0, 32, 8)]
+                        for w in words]
+                cur.append([regs[5 + 3 * b:8 + 3 * b] for b in range((len(regs) - 5) // 3)])
+        return out[:frames]
 
     def deploy(self, kit=0, timeout=60):
         """Deploys from the spawn screen and waits for the soldier. The spawn screen needs a moment before its spawn
@@ -281,6 +316,46 @@ def resolve_frame(frame, build_dir=os.path.join(ROOT, "project", "out", "build",
     return f"{module}!{names[i]}+{int(rva, 16) - addrs[i]:#x}" if i >= 0 else frame
 
 
+def bone_packet_dwords(bone_count):
+    """SET_SHADER_CONSTANTS size of a skinned draw: 5 header registers + 3 per bone, rounded up to 4 registers."""
+    regs = 5 + 3 * bone_count
+    return (regs + 3) // 4 * 4 * 4
+
+
+def print_bone_frames(frames, slots, pass_index=0, jump_deg=2.0, csv_path=None):
+    """Per frame: each slot's translation and its rotation since the previous frame (degrees; * above jump_deg)."""
+    def rot_deg(a, b):  # angle of b * a^T for two 3x3 rotations given as rows
+        tr = sum(sum(b[i][k] * a[j][k] for k in range(3)) if i == j else 0 for i in range(3) for j in range(3))
+        return math.degrees(math.acos(max(-1.0, min(1.0, (tr - 1) / 2))))
+
+    rows, prev, worst = [], None, {s: 0.0 for s in slots}
+    for n, packets in enumerate(frames):
+        if len(packets) <= pass_index:
+            print(f"{n:4d}  (no packet {pass_index})")
+            continue
+        bones = packets[pass_index]
+        line = f"{n:4d}"
+        for s in slots:
+            if s >= len(bones):
+                continue
+            b = bones[s]
+            t = (b[0][3], b[1][3], b[2][3])
+            d = rot_deg(prev[s], b) if prev and s < len(prev) else 0.0
+            worst[s] = max(worst[s], d)
+            line += f"  | slot {s} t=({t[0]:6.3f} {t[1]:6.3f} {t[2]:6.3f}) {d:5.1f} deg{'*' if d > jump_deg else ' '}"
+            rows.append((n, s, *t, d, *[x for r in b for x in r[:3]]))
+        print(line)
+        prev = bones
+    print("max rotation per frame: " + ", ".join(f"slot {s} {worst[s]:.1f} deg" for s in slots)
+          + f"  ({len(frames)} frames; steady standing still is under ~0.5 deg)")
+    if csv_path:
+        with open(csv_path, "w") as f:
+            f.write("frame,slot,tx,ty,tz,rot_deg,r00,r01,r02,r10,r11,r12,r20,r21,r22\n")
+            for r in rows:
+                f.write(",".join(f"{x:.6g}" if isinstance(x, float) else str(x) for x in r) + "\n")
+        print(f"wrote {csv_path}")
+
+
 def write_png(path, width, height, bgra):
     """Top-down BGRA -> RGB PNG (stdlib only)."""
     stride = width * 4
@@ -380,6 +455,25 @@ def main():
 
     if verb == "crash":  # reads the log; the game may be gone
         return print_crash_report()
+    if verb == "bones":
+        ap = argparse.ArgumentParser(prog="bf3dbg.py bones")
+        ap.add_argument("frames", nargs="?", type=int, default=30)
+        ap.add_argument("--dwords", type=int, default=656, help="packet size (default 656: the 3P body's 53 bones)")
+        ap.add_argument("--count", type=int, help="bone count of the subset instead of --dwords")
+        ap.add_argument("--bones", default="0,1,2", help="packet bone slots to print, e.g. 0,1,2")
+        ap.add_argument("--pass", dest="pass_index", type=int, default=0, help="which matching packet of a frame")
+        ap.add_argument("--jump", type=float, default=2.0, help="flag rotations above this many degrees per frame")
+        ap.add_argument("--csv", help="also write every frame's slots to this CSV")
+        a = ap.parse_args(argv[1:])
+        try:
+            bf = Bf3()
+        except OSError:
+            print(f"bf3dbg: no game answering on 127.0.0.1:{DEFAULT_PORT}", file=sys.stderr)
+            return 1
+        dwords = bone_packet_dwords(a.count) if a.count else a.dwords
+        frames = bf.bones(a.frames, dwords)
+        print_bone_frames(frames, [int(x) for x in a.bones.split(",")], a.pass_index, a.jump, a.csv)
+        return 0 if frames else 1
     try:
         bf = Bf3()
     except OSError:

@@ -69,7 +69,7 @@ if(TARGET bf3_BF_Main)
         src/bf_main/pc_concepts.cpp
     )
     if(BF3_DEV_TOOLS)
-        target_sources(bf3_BF_Main PRIVATE src/bf_main/dev_state.cpp src/bf_main/dev_tools.cpp)
+        target_sources(bf3_BF_Main PRIVATE src/bf_main/dev_state.cpp src/bf_main/dev_tools.cpp src/bf_main/anim_probe.cpp)
     endif()
 endif()
 

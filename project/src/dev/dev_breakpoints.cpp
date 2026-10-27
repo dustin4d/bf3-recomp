@@ -9,7 +9,8 @@
 //   is swapped for ReturnThunk, which records r3/f1 on return and goes back to the caller. Recompiled functions are
 //   noinline weak aliases, so every call reaches the entry. Recursion nests per thread.
 // A background thread re-arms the registers every 100 ms (threads keep being created) and clears them when a slot runs
-// out of time or hits. Heap addresses only for watches (the physical views' aliases are not watched).
+// out of time or hits. Watches take heap or physical-view addresses; a physical page is watched only through the view
+// (A/C/E range) given, not its aliases.
 
 #include "dev_breakpoints.h"
 
@@ -295,7 +296,9 @@ int Add(BpKind kind, uint32_t guest, uint64_t host, uint32_t len, int max_hits, 
 int AddWatch(uint32_t guest_addr, uint32_t len, bool reads, int max_hits, uint32_t seconds, std::string& error) {
   if (len != 1 && len != 2 && len != 4 && len != 8) return error = "length must be 1, 2, 4 or 8", -1;
   if (guest_addr % len) return error = "address must be aligned to the length", -1;
-  if (guest_addr < 0x40000000u || guest_addr >= 0xA0000000u) return error = "heap addresses only (40000000-9FFFFFFF)", -1;
+  // Heaps and the physical views (A/C/E ranges: the same pages at different host addresses, so watch the view the
+  // code writes through).
+  if (guest_addr < 0x40000000u) return error = "heap or physical addresses only (40000000-FFFFFFFF)", -1;
   const int slot = Add(reads ? BpKind::kReadWrite : BpKind::kWrite, guest_addr, kGuestBase + guest_addr, len, max_hits,
                        seconds, error);
   if (slot >= 0) StartArming();
