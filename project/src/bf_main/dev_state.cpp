@@ -113,7 +113,17 @@ bool bf3_dev::Readable(uint8_t* base, uint32_t addr, uint32_t length) {
   if (rex::memory::Memory* memory = rex::system::kernel_memory()) {
     rex::memory::BaseHeap* heap = memory->LookupHeap(addr);
     if (heap && heap == memory->LookupHeap(addr + length - 1)) {
-      if (heap->QueryRangeAccess(addr, addr + length - 1) != rex::memory::PageAccess::kNoAccess) return true;
+      if (heap->QueryRangeAccess(addr, addr + length - 1) != rex::memory::PageAccess::kNoAccess) {
+        // QueryRangeAccess only reads the protection bits: a reserved or decommitted page keeps them, and reading
+        // it is a fatal guest fault (2026-10-27: DevFrame at guest 0x40030976 during a weapon switch). Require the
+        // pages to be committed too; a range spans at most a few pages here.
+        rex::memory::HeapAllocationInfo info;
+        const uint32_t page = heap->page_size();
+        for (uint32_t a = addr & ~(page - 1); a <= addr + length - 1 && a >= (addr & ~(page - 1)); a += page) {
+          if (!heap->QueryRegionInfo(a, &info) || !(info.state & rex::memory::kMemoryAllocationCommit)) return false;
+        }
+        return true;
+      }
       // The module images (0x82000000-0x8A000000): the heap's page table reports parts of them (e.g. BF.Main's
       // typeinfo section 0x84155000) as no access although the game reads them; ask the host instead.
       if (addr < 0x82000000u || addr >= 0x8A000000u) return false;
@@ -133,21 +143,19 @@ bool bf3_dev::Readable(uint8_t* base, uint32_t addr, uint32_t length) {
 }
 
 namespace {
-// Copies a NUL-terminated guest string of printable characters into out; -1 if it isn't one or the read faults.
-// SEH-guarded: a pointer the check passed can still go stale before the read (2026-10-27: DevFrame read a freed
-// string at guest 0x400B3779 during a Metro session, "Unhandled guest access violation").
+// Copies a NUL-terminated guest string of printable characters into out; -1 if it isn't one or the page can't be read.
+// Through ReadProcessMemory, which fails instead of faulting: the guest heap's page table only says a page's
+// protection, not that it is (still) committed, and the runtime's vectored handler turns a guest fault into a fatal
+// "Unhandled guest access violation" before any __try sees it. 2026-10-27 coverage sessions: DevFrame read strings at
+// guest 0x400B3779 and 0x6400006D (knife attack) that way and ended the game.
 int CopyGuestString(uint8_t* base, uint32_t addr, char* out, size_t max) {
-  __try {
-    for (size_t i = 0; i < max; ++i) {
-      const char c = char(REX_LOAD_U8(addr + uint32_t(i)));
-      if (!c) return int(i);
-      if (c < 0x20 || c > 0x7E) return -1;
-      out[i] = c;
-    }
-    return int(max);
-  } __except (EXCEPTION_EXECUTE_HANDLER) {
-    return -1;
+  SIZE_T got = 0;
+  if (!ReadProcessMemory(GetCurrentProcess(), base + addr, out, max, &got) || got != max) return -1;
+  for (size_t i = 0; i < max; ++i) {
+    if (!out[i]) return int(i);
+    if (out[i] < 0x20 || out[i] > 0x7E) return -1;
   }
+  return int(max);
 }
 }  // namespace
 
