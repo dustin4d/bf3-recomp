@@ -44,7 +44,7 @@ and GhidraMCP.
   committed) with `patches/rexglue/*.patch` applied; `gpu_plugin/CMakeLists.txt` builds only `rexgpu-xenos.dll`
   (D3D12, like the prebuilt Windows SDK) against the prebuilt Windows SDK runtime via `rex::runtime`:
   ```bash
-  cd tools/rexglue-src && git checkout bd833a2a && git apply ../../patches/rexglue/*.patch && cd ../..   # 0001-0007
+  cd tools/rexglue-src && git checkout bd833a2a && git apply ../../patches/rexglue/*.patch && cd ../..   # 0001-0008
   cmake -S gpu_plugin -B gpu_plugin/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_TOOLCHAIN_FILE=$PWD/tools/cross/win-amd64-xwin.cmake -Drexglue_DIR=$PWD/tools/cross/rexglue
   cmake --build gpu_plugin/build      # ~20 s; win_deploy.sh deploys it instead of the SDK's stock plugin
@@ -59,7 +59,25 @@ and GhidraMCP.
   mount, read-only), so the HD pack can ship in the build folder. Patch 0007 = frame latency limit (cvar `gpu_max_frames_ahead`,
   default 2: VdSwap waits while the guest is that many frames ahead of command processing), kernel object table
   lookups under a shared lock, manual-reset event state tracking (redundant Set/Reset skip the host call), GPU-write
-  publishing during waits, diagnostics `gpu_late_write_check` / VS constant trace.
+  publishing during waits, diagnostics `gpu_late_write_check` / VS constant trace. Patch 0008 = codegen option
+  `coverage` (manifest, per module): every generated function starts with `REX_COVERAGE_HIT(<guest addr>)`, which marks
+  the module's hit byte `rex_coverage_hits[(addr - code_base) / 4]` (read first, written once: a plain store per call
+  cost 86 -> 62 fps on Metro through cache-line ping-pong, check-before-store 86 -> 74) when the build defines
+  `REX_COVERAGE`, else nothing; DLL modules export `ReXModule_GetCoverage(&code_base, &count)`; codegen also writes
+  `<out>/bf3_functions.tsv` (address, size, blocks, name, kind) from its own analysis. Off: output byte-identical to
+  the SDK's codegen except the (inactive) macro block in the pch.
+- **Codegen CLI built from source** (2026-10-27, needed for patch 0008: templates are compiled into the binary):
+  `tools/rexglue-src/out/linux-amd64/rexglue`; `tools/cross/rexglue/rexglueConfig.cmake` uses it when present (else the
+  SDK's). Linux needs the Vulkan submodules (`git submodule update --init --depth 1 thirdparty/vulkan-headers
+  thirdparty/vulkan-memory-allocator thirdparty/spirv-headers thirdparty/spirv-tools thirdparty/glslang`):
+  ```bash
+  R=tools/rexglue-src
+  cmake -S $R -B $R/out/linux-codegen -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang \
+    -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_CXX_STANDARD=23 -DCMAKE_CXX_FLAGS=-march=x86-64-v2 \
+    -DCMAKE_C_FLAGS=-march=x86-64-v2 > logs/rexglue-linux-configure.log
+  cmake --build $R/out/linux-codegen --target rexglue -j12 > logs/rexglue-linux-build.log   # -> $R/out/linux-amd64/
+  ```
+  The codegen stamp hashes the embedded templates and the manifest, so a template or option change regenerates.
 - **Runtime built from source** (2026-10-25): `rexruntime.dll` from the same tree replaces the prebuilt one at deploy
   (`scripts/win_deploy.sh`; `REX_STOCK_RUNTIME=1` deploys the SDK's). All 558 symbols the exe/DLLs/plugin import are
   exported, same DLL dependencies (WINDOWS_EXPORT_ALL_SYMBOLS), so it's drop-in. Submodules fetched with
@@ -273,7 +291,7 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
     - game (main thread, next frame): `level [spec]` (refused until the boot's profile load/save is through: a switch
       0.5 s after the main menu hung the load once), `team us|ru`, `deploy [kit 0-3]`, `look <yaw> <pitch>` / `turn`
       (aimer radians), `teleport <x> <y> <z> [heading]`, `entities <ServerClassName|0xTypeInfo>`.
-    - input (no focus needed): `key W+LShift 2000|down|up` (key_* names, also LMB/RMB, 1/2 weapon slots),
+    - input (no focus needed): `key W+Shift 2000|down|up` (key_* names, also LMB/RMB, 1/2 weapon slots),
       `pad LY=32767+RT 1500|down|release`, `mouse move|click|down|up|wheel|look`.
     - tools: `cvar <name> [value]`, `peek <hex> [n]`, `poke <hex> f32|u32|u16|u8|bytes <v,...>`,
       `find f32|u32|bytes <v,...> [tol] [lo-hi]` (default 40000000-C0000000, up to 512 hits),
@@ -294,6 +312,11 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
         type info; type info +0 -> record +0 -> name).
       - `messages on [hash,...] | off | read | stats`: the message dispatcher sub_83026CB8; bf3dbg.py names the
         hashes (djb2-xor of class names from the BF.Main image, cached in logs/dbg/msg_names.json).
+      - `coverage [stats] | dump [reset] | reset` (2026-10-27, coverage builds: CMake `BF3_COVERAGE`, default ON with
+        BF3_DEV_TOOLS, ~8% frame time, so `-DBF3_COVERAGE=OFF` for performance work): functions run since start or
+        the last reset, per module (Default, BF.Main, Engine.BuildInfo). `bf3dbg.py coverage dump [file] [reset]`
+        writes `module<TAB>0xADDR` lines (default logs/coverage/<time>.tsv); the addresses travel as the reply's bytes,
+        so the game writes nothing on Windows. Full sessions: `scripts/decomp/coverage_session.py <run>`.
       - `pause` / `resume` / `step [n] [frames|ticks]` / `timescale <0.1-4>`: pause holds the main thread at the frame
         boundary (simulation, server, input, frame submission stop; queued API work still runs) and slows the guest
         clock to 1% meanwhile (a scalar of 0 divides by zero in the runtime clock); step n frames is exact; ticks are

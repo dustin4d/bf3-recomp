@@ -81,6 +81,18 @@ foreach(_t bf3 bf3_BF_Main)
     endif()
 endforeach()
 
+# Coverage hit bytes (manifest `coverage`, patch 0008): REX_COVERAGE turns the generated REX_COVERAGE_HIT stores on
+# (debug API `coverage`, scripts/decomp/coverage_session.py). Development builds only; costs ~8% frame time (Metro
+# 86 -> 74 fps), so turn it off for performance work. It goes on every module target (generated code, PCH, hooks).
+option(BF3_COVERAGE "Per-function coverage hit bytes (development builds; ~8% frame time)" ON)
+if(BF3_DEV_TOOLS AND BF3_COVERAGE)
+    foreach(_t bf3 bf3_recomp bf3_BF_Main bf3_Engine_BuildInfo)
+        if(TARGET ${_t})
+            target_compile_definitions(${_t} PRIVATE REX_COVERAGE)
+        endif()
+    endforeach()
+endif()
+
 # Linker maps for scripts/resolve_rva.py (crash_trace frames are <module>+0x<RVA>).
 if(WIN32)
     foreach(_t bf3 bf3_BF_Main bf3_Engine_BuildInfo)

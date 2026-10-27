@@ -1,0 +1,173 @@
+diff --git a/include/rex/codegen/config.h b/include/rex/codegen/config.h
+index 8200139..fbaa5e5 100644
+--- a/include/rex/codegen/config.h
++++ b/include/rex/codegen/config.h
+@@ -93,6 +93,7 @@ struct RecompilerConfig {
+   bool xerAsLocalVariable = false;
+   bool reservedRegisterAsLocalVariable = false;
+   bool skipMsr = false;
++  bool coverage = false;  ///< Every function marks a per-function hit byte on entry (REX_COVERAGE_HIT)
+   bool crRegistersAsLocalVariables = false;
+   bool nonArgumentRegistersAsLocalVariables = false;
+   bool nonVolatileRegistersAsLocalVariables = false;
+diff --git a/resources/templates/codegen/init_cpp.inja b/resources/templates/codegen/init_cpp.inja
+index 1be4759..9617f4d 100644
+--- a/resources/templates/codegen/init_cpp.inja
++++ b/resources/templates/codegen/init_cpp.inja
+@@ -29,7 +29,12 @@ const rex::PPCImageInfo PPCImageConfig = {
+     },
+ };
+ 
+-PPCFuncMapping PPCFuncMappings[] = {
++{% if config_flags.coverage %}#if defined(REX_COVERAGE)
++// One hit byte per 4-byte slot of the code range, set by REX_COVERAGE_HIT.
++extern "C" uint8_t rex_coverage_hits[(REX_CODE_SIZE + 3) / 4] = {};
++#endif
++
++{% endif %}PPCFuncMapping PPCFuncMappings[] = {
+ {% for fn in functions %}{% if not fn.below_code_base or fn.is_import %}	{ {{ fn.address }}, {{ fn.name }} },
+ {% endif %}{% endfor %}	{ 0, nullptr }
+ };
+diff --git a/resources/templates/codegen/pch_h.inja b/resources/templates/codegen/pch_h.inja
+index 68274d2..4c2b261 100644
+--- a/resources/templates/codegen/pch_h.inja
++++ b/resources/templates/codegen/pch_h.inja
+@@ -13,6 +13,7 @@
+ {% endif %}{% if config_flags.xer_as_local %}#define REX_CONFIG_XER_AS_LOCAL
+ {% endif %}{% if config_flags.reserved_as_local %}#define REX_CONFIG_RESERVED_AS_LOCAL
+ {% endif %}{% if config_flags.skip_msr %}#define REX_CONFIG_SKIP_MSR
++{% endif %}{% if config_flags.coverage %}#define REX_CONFIG_COVERAGE
+ {% endif %}{% if config_flags.cr_as_local %}#define REX_CONFIG_CR_AS_LOCAL
+ {% endif %}{% if config_flags.non_argument_as_local %}#define REX_CONFIG_NON_ARGUMENT_AS_LOCAL
+ {% endif %}{% if config_flags.non_volatile_as_local %}#define REX_CONFIG_NON_VOLATILE_AS_LOCAL
+@@ -120,6 +121,30 @@ extern PPCFuncMapping PPCFuncMappings[];
+ #endif
+ #endif
+ 
++//=============================================================================
++// Coverage
++//=============================================================================
++
++// With the codegen option `coverage`, every function starts with
++// REX_COVERAGE_HIT(its guest address). It stores 1 into this module's hit byte
++// for that address (one byte per instruction slot of the code range) only when
++// the build defines REX_COVERAGE; otherwise it compiles to nothing. The byte is
++// read before it is written: hot functions run on every thread, and a store of
++// an unchanged value would still bounce its cache line between cores on every call.
++#if defined(REX_CONFIG_COVERAGE) && defined(REX_COVERAGE)
++extern "C" uint8_t rex_coverage_hits[];
++#define REX_COVERAGE_HIT(addr)                                                   \
++  do {                                                                           \
++    if ((u32)((addr) - REX_CODE_BASE) < REX_CODE_SIZE) {                         \
++      volatile uint8_t* rex_hit_ = &rex_coverage_hits[(u32)((addr) - REX_CODE_BASE) >> 2]; \
++      if (__builtin_expect(*rex_hit_ == 0, 0))                                   \
++        *rex_hit_ = 1;                                                           \
++    }                                                                            \
++  } while (0)
++#else
++#define REX_COVERAGE_HIT(addr) ((void)0)
++#endif
++
+ //=============================================================================
+ // Memory Access
+ //=============================================================================
+diff --git a/resources/templates/codegen/register_cpp.inja b/resources/templates/codegen/register_cpp.inja
+index 0be31c4..c2fd61c 100644
+--- a/resources/templates/codegen/register_cpp.inja
++++ b/resources/templates/codegen/register_cpp.inja
+@@ -26,5 +26,17 @@ void {{ project }}_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar)
+ extern "C" REX_MODULE_EXPORT
+ const rex::PPCImageInfo* ReXModule_GetImageInfo() {
+   return &PPCImageConfig;
++}{% if config_flags.coverage %}
++
++#if defined(REX_COVERAGE)
++extern "C" uint8_t rex_coverage_hits[];
++
++// The hit bytes of this module: entry i is code_base + 4 * i.
++extern "C" REX_MODULE_EXPORT
++uint8_t* ReXModule_GetCoverage(uint32_t* code_base, uint32_t* count) {
++  *code_base = REX_CODE_BASE;
++  *count = (REX_CODE_SIZE + 3) / 4;
++  return rex_coverage_hits;
+ }
++#endif{% endif %}
+ {% endif %}
+diff --git a/src/codegen/codegen_writer.cpp b/src/codegen/codegen_writer.cpp
+index a0484fb..c2e78f6 100644
+--- a/src/codegen/codegen_writer.cpp
++++ b/src/codegen/codegen_writer.cpp
+@@ -86,6 +86,7 @@ nlohmann::json buildTemplateData(const rex::codegen::CodegenContext& ctx,
+       {"xer_as_local", cfg.xerAsLocalVariable},
+       {"reserved_as_local", cfg.reservedRegisterAsLocalVariable},
+       {"skip_msr", cfg.skipMsr},
++      {"coverage", cfg.coverage},
+       {"cr_as_local", cfg.crRegistersAsLocalVariables},
+       {"non_argument_as_local", cfg.nonArgumentRegistersAsLocalVariables},
+       {"non_volatile_as_local", cfg.nonVolatileRegistersAsLocalVariables},
+@@ -116,7 +117,7 @@ bool IsGeneratedOutputName(std::string_view filename, std::string_view projectNa
+   if (dot == std::string_view::npos)
+     return false;
+   auto ext = filename.substr(dot);
+-  if (ext != ".cpp" && ext != ".h" && ext != ".cmake")
++  if (ext != ".cpp" && ext != ".h" && ext != ".cmake" && ext != ".tsv")
+     return false;
+ 
+   if (filename == "sources.cmake")
+@@ -236,6 +237,22 @@ bool CodegenWriter::write(bool force) {
+   out = renderWithJson(registry, "codegen/register_cpp", tmplData);
+   SaveCurrentOutData(fmt::format("{}_register.cpp", projectName));
+ 
++  // Generate {project}_functions.tsv (coverage: what each hit byte belongs to)
++  if (config().coverage) {
++    out = "address\tsize\tblocks\tname\tkind\n";
++    for (const auto* fn : functions) {
++      const char* kind = fn->authority() == FunctionAuthority::IMPORT ? "import"
++                         : rexcrtByAddr.contains(fn->base())          ? "rexcrt"
++                                                                      : "code";
++      std::string fnName = fn->base() == analysisState().entryPoint ? std::string("xstart")
++                           : !fn->name().empty() ? fn->name()
++                                                 : fmt::format("sub_{:08X}", fn->base());
++      out += fmt::format("0x{:08X}\t0x{:X}\t{}\t{}\t{}\n", fn->base(), fn->size(),
++                         fn->blocks().size(), fnName, kind);
++    }
++    SaveCurrentOutData(fmt::format("{}_functions.tsv", projectName));
++  }
++
+   // Filter out imports and rexcrt functions before recompilation
+   std::erase_if(functions, [](const FunctionNode* fn) {
+     return fn->authority() == FunctionAuthority::IMPORT;
+diff --git a/src/codegen/config.cpp b/src/codegen/config.cpp
+index 5da54a0..650d766 100644
+--- a/src/codegen/config.cpp
++++ b/src/codegen/config.cpp
+@@ -102,6 +102,7 @@ void ApplyToml(const toml::table& toml, RecompilerConfig& cfg, const std::string
+   auto hasBool = [&](const char* key) -> bool { return toml[key].is_boolean(); };
+   MergeBool(cfg.skipLr, toml["skip_lr"].value_or(false), hasBool("skip_lr"), "skip_lr");
+   MergeBool(cfg.skipMsr, toml["skip_msr"].value_or(false), hasBool("skip_msr"), "skip_msr");
++  MergeBool(cfg.coverage, toml["coverage"].value_or(false), hasBool("coverage"), "coverage");
+   MergeBool(cfg.ctrAsLocalVariable, toml["ctr_as_local"].value_or(false), hasBool("ctr_as_local"),
+             "ctr_as_local");
+   MergeBool(cfg.xerAsLocalVariable, toml["xer_as_local"].value_or(false), hasBool("xer_as_local"),
+diff --git a/src/codegen/function_graph.cpp b/src/codegen/function_graph.cpp
+index fc918bb..a755e6a 100644
+--- a/src/codegen/function_graph.cpp
++++ b/src/codegen/function_graph.cpp
+@@ -369,6 +369,8 @@ std::string FunctionNode::emitCpp(const EmitContext& ctx) const {
+     emit_println(out, "// STUB: Function at 0x{:08X} has no discovered code blocks", base());
+     emit_println(out, "DEFINE_REX_FUNC({}) {{", name);
+     emit_println(out, "\tREX_FUNC_PROLOGUE();");
++    if (ctx.config.coverage)
++      emit_println(out, "\tREX_COVERAGE_HIT(0x{:X});", base());
+     emit_println(out, "}}\n");
+     return out;
+   }
+@@ -481,6 +483,8 @@ std::string FunctionNode::emitCpp(const EmitContext& ctx) const {
+   // Function signature with weak/alias pattern
+   emit_println(out, "DEFINE_REX_FUNC({}) {{", name);
+   emit_println(out, "\tREX_FUNC_PROLOGUE();");
++  if (ctx.config.coverage)
++    emit_println(out, "\tREX_COVERAGE_HIT(0x{:X});", base());
+ 
+   // --- Second pass: emit instruction code ---
+   const JumpTable* activeJt = nullptr;

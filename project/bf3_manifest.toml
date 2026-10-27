@@ -12,6 +12,10 @@ game_root = "../dump/Disc 1/game"
 file_path = "../dump/Disc 1/game/Default.xex"
 out_directory_path = "generated/default"
 includes = []
+# Coverage (patches/rexglue/0008): every function starts with REX_COVERAGE_HIT(address), a one-byte store into this
+# module's hit array. It only does something when the build defines REX_COVERAGE (development builds, BF3_DEV_TOOLS);
+# win-cross-ship compiles it to nothing. Also writes <out>/bf3_functions.tsv (address, size, blocks, name).
+coverage = true
 
 [entrypoint.functions]
 # Referenced only from data (static-init tables, vtables, callbacks) or lis+addi/ori: scripts/find_unregistered.py, 2026-10-24.
@@ -41,6 +45,7 @@ guest_path = "bf.main.xex"
 file_path = "../dump/Disc 1/game/BF.Main.xex"
 out_directory_path = "generated/bf_main"
 includes = []
+coverage = true
 # MSVC CRT setjmp/longjmp. Lua's luaD_rawrunprotected (0x838F9300) setjmps, luaD_throw (0x838F9E38) longjmps;
 # undeclared, the longjmp just returned and luaD_throw fell through to panic + exit(1) (via doexit 0x838B5860).
 setjmp_address = 0x83DF2720   # mflr/mfcr, stfd f14.. into jmp_buf at r3
@@ -319,6 +324,7 @@ guest_path = "engine.buildinfo.xex"
 file_path = "../dump/Disc 1/game/Engine.BuildInfo.xex"
 out_directory_path = "generated/engine_buildinfo"
 includes = []
+coverage = true
 
 # .xidata linker thunks (no .pdata; codegen "target not in any function" from b). From scripts/xidata_thunks.py.
 [modules.functions]

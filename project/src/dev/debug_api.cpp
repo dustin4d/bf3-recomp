@@ -20,6 +20,7 @@
 #include <windows.h>
 
 #include <rex/cvar.h>
+#include <rex/image_info.h>
 #include <rex/logging.h>
 #include <rex/logging/api.h>
 #include <spdlog/details/null_mutex.h>
@@ -50,6 +51,12 @@
 #include "../pc_keys.h"
 #include "../pc_mouse.h"
 #include "../ui_state.h"
+
+// The launcher's image info and coverage hit bytes, generated into bf3.exe (bf3_init.cpp).
+extern const rex::PPCImageInfo PPCImageConfig;
+#if defined(REX_COVERAGE)
+extern "C" uint8_t rex_coverage_hits[];
+#endif
 
 namespace bf3::dev {
 namespace {
@@ -184,6 +191,61 @@ template <typename Fn>
 Fn DllExport(const char* name) {
   HMODULE module = GetModuleHandleW(L"bf3_BF_Main.dll");
   return module ? reinterpret_cast<Fn>(GetProcAddress(module, name)) : nullptr;
+}
+
+// ---- coverage (codegen option `coverage`, patch 0008) -------------------------------------------------------------
+
+// One module's hit bytes: entry i belongs to the guest function starting at code_base + 4 * i.
+struct CoverageModule {
+  const char* name;
+  uint32_t code_base = 0, count = 0;
+  uint8_t* hits = nullptr;
+};
+
+std::vector<CoverageModule> CoverageModules() {
+  std::vector<CoverageModule> out;
+#if defined(REX_COVERAGE)
+  out.push_back({"Default", PPCImageConfig.code_base, (PPCImageConfig.code_size + 3) / 4, rex_coverage_hits});
+#endif
+  for (auto [name, dll] : {std::pair{"BF.Main", L"bf3_BF_Main.dll"}, {"Engine.BuildInfo", L"bf3_Engine_BuildInfo.dll"}}) {
+    HMODULE module = GetModuleHandleW(dll);
+    auto get = module ? reinterpret_cast<uint8_t* (*)(uint32_t*, uint32_t*)>(GetProcAddress(module, "ReXModule_GetCoverage"))
+                      : nullptr;
+    if (!get) continue;
+    CoverageModule m{name};
+    m.hits = get(&m.code_base, &m.count);
+    out.push_back(m);
+  }
+  return out;
+}
+
+// coverage [stats] | dump [reset] | reset. dump sends the hit function addresses (u32 little-endian, module by module
+// in the "modules" order) as the reply's bytes; with reset each byte is cleared as it is read.
+Reply Coverage(const Args& a) {
+  const std::string op = a.size() > 1 ? a[1] : "stats";
+  const bool dump = op == "dump", reset = op == "reset" || (dump && a.size() > 2 && a[2] == "reset");
+  if (!dump && !reset && op != "stats") return Fail("usage: coverage [stats] | dump [reset] | reset");
+  const auto modules = CoverageModules();
+  if (modules.empty()) return Fail("no module has coverage (codegen option `coverage`, REX_COVERAGE build)");
+  Reply r;
+  std::string list = "[";
+  for (const auto& m : modules) {
+    uint32_t hits = 0;
+    for (uint32_t i = 0; i < m.count; ++i) {
+      if (!m.hits[i]) continue;
+      ++hits;
+      if (dump) {
+        const uint32_t addr = m.code_base + 4 * i;
+        r.binary.append(reinterpret_cast<const char*>(&addr), 4);
+      }
+      if (reset) m.hits[i] = 0;
+    }
+    Obj o;
+    o.Str("name", m.name).Address("code_base", m.code_base).Int("slots", m.count).Int("hits", hits);
+    list += (list.size() > 1 ? "," : "") + o.Json();
+  }
+  r.obj.Raw("modules", list + "]");
+  return r;
 }
 
 bool GetSnapshot(Snapshot& s) {
@@ -890,6 +952,9 @@ void RegisterCommands() {
              r.obj.Raw("frames", HistoryJson(int(std::clamp(n, 1LL, 3000LL))));
              return r;
            }, true);
+  Register("coverage", "coverage [stats] | dump [reset] | reset",
+           "functions run since start or the last reset (one hit byte per function); dump: \"bytes\" of u32 addresses follow",
+           Coverage, true);
   Register("shot", "shot", "capture the game window: \"bytes\" raw top-down BGRA follow the JSON line",
            [](const Args&) { return Shot(); }, true);
   Register("quit", "quit", "end the game process now", [](const Args&) -> Reply {

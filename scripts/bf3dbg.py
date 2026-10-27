@@ -21,6 +21,9 @@ Command line:
   bf3dbg.py bones [frames] [--dwords n | --count bones] [--bones 0,1,2] [--pass i] [--jump deg] [--csv out]
                                         skinning bone matrices the GPU received, per frame (our GPU plugin's
                                         gpu_vsconst_* cvars; default: the 3P body's 53-bone packet)
+  bf3dbg.py coverage dump [file] [reset] functions run so far (coverage build) as TSV `module<TAB>0xADDR`, default
+                                        logs/coverage/<time>.tsv; reset clears the hits as it reads (phases).
+                                        `coverage` / `coverage reset` print the per-module counts / clear them
   bf3dbg.py metro [--team ru] [--kit 0] [--spot name] [--walk ms] [--look yaw pitch]
                                         the Metro TDM recipe on an already running game
 
@@ -137,6 +140,23 @@ class Bf3:
             raise Bf3Error(f"shot: {reply.get('error')}")
         write_png(path, reply["width"], reply["height"], data)
         return path
+
+    def coverage_dump(self, path, reset=False):
+        """Writes the functions run since start (or the last reset) to `path` as TSV lines `module<TAB>0xADDR`
+        (coverage build: codegen option `coverage`, patch 0008). reset clears each hit byte as it is read, so
+        consecutive dumps split a session into phases. Returns the reply (per-module slot/hit counts)."""
+        reply, data = self.request("coverage dump" + (" reset" if reset else ""))
+        if not reply.get("ok"):
+            raise Bf3Error(f"coverage: {reply.get('error')}")
+        data = data or b""
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        with open(path, "w") as f:
+            off = 0
+            for m in reply["modules"]:
+                for (addr,) in struct.iter_unpack("<I", data[off:off + 4 * m["hits"]]):
+                    f.write(f"{m['name']}\t0x{addr:08X}\n")
+                off += 4 * m["hits"]
+        return reply
 
     def bones(self, frames=30, dwords=656, timeout=20.0, log_path=os.path.join(ROOT, "logs", "win-run.log")):
         """Skinning constants the GPU received, per frame: needs our GPU plugin's diagnostic cvars (patch-in-progress
@@ -518,6 +538,15 @@ def main():
         return 0
     if verb == "bp":
         print_breakpoints(bf.cmd("bp")["breakpoints"])
+        return 0
+    if verb == "coverage" and len(argv) > 1 and argv[1] == "dump":
+        # coverage dump [file] [reset]: hit functions to a TSV (default logs/coverage/<time>.tsv)
+        rest = argv[2:]
+        reset = "reset" in rest
+        rest = [w for w in rest if w != "reset"]
+        path = rest[0] if rest else os.path.join(ROOT, "logs", "coverage", time.strftime("%Y%m%d-%H%M%S") + ".tsv")
+        reply = bf.coverage_dump(path, reset)
+        print(path + ": " + ", ".join(f"{m['name']} {m['hits']}" for m in reply["modules"]))
         return 0
     if verb == "messages" and (len(argv) == 1 or argv[1] in ("read", "stats")):
         reply = bf.cmd(" ".join(argv))
