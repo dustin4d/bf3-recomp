@@ -73,6 +73,11 @@ if(TARGET bf3_BF_Main)
         target_sources(bf3_BF_Main PRIVATE src/bf_main/dev_state.cpp src/bf_main/dev_tools.cpp src/bf_main/dev_cheats.cpp
             src/bf_main/anim_probe.cpp)
     endif()
+    # Decompiled code (docs/DECOMP.md): overrides of BF.Main functions, one subsystem per directory.
+    file(GLOB_RECURSE BF3_NATIVE_SOURCES CONFIGURE_DEPENDS src/native/*.cpp)
+    if(BF3_NATIVE_SOURCES)
+        target_sources(bf3_BF_Main PRIVATE ${BF3_NATIVE_SOURCES})
+    endif()
 endif()
 
 foreach(_t bf3 bf3_BF_Main)
