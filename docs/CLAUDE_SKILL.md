@@ -44,7 +44,7 @@ and GhidraMCP.
   committed) with `patches/rexglue/*.patch` applied; `gpu_plugin/CMakeLists.txt` builds only `rexgpu-xenos.dll`
   (D3D12, like the prebuilt Windows SDK) against the prebuilt Windows SDK runtime via `rex::runtime`:
   ```bash
-  cd tools/rexglue-src && git checkout bd833a2a && git apply ../../patches/rexglue/*.patch && cd ../..   # 0001-0006
+  cd tools/rexglue-src && git checkout bd833a2a && git apply ../../patches/rexglue/*.patch && cd ../..   # 0001-0007
   cmake -S gpu_plugin -B gpu_plugin/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_TOOLCHAIN_FILE=$PWD/tools/cross/win-amd64-xwin.cmake -Drexglue_DIR=$PWD/tools/cross/rexglue
   cmake --build gpu_plugin/build      # ~20 s; win_deploy.sh deploys it instead of the SDK's stock plugin
@@ -56,7 +56,10 @@ and GhidraMCP.
   Patch 0003 = dual-source alpha on fixed16 RTs. Patch 0004 = deferred memexport readback (plugin). Patch 0005 =
   runtime: `present_vsync` (host DXGI vsync) and SDL audio output stats. Patch 0006 = runtime: marketplace content not found
   in the user data is also read from `<game_data_root>/Content/0000000000000000/<title>/00000002/` (listing +
-  mount, read-only), so the HD pack can ship in the build folder.
+  mount, read-only), so the HD pack can ship in the build folder. Patch 0007 = frame latency limit (cvar `gpu_max_frames_ahead`,
+  default 2: VdSwap waits while the guest is that many frames ahead of command processing), kernel object table
+  lookups under a shared lock, manual-reset event state tracking (redundant Set/Reset skip the host call), GPU-write
+  publishing during waits, diagnostics `gpu_late_write_check` / VS constant trace.
 - **Runtime built from source** (2026-10-25): `rexruntime.dll` from the same tree replaces the prebuilt one at deploy
   (`scripts/win_deploy.sh`; `REX_STOCK_RUNTIME=1` deploys the SDK's). All 558 symbols the exe/DLLs/plugin import are
   exported, same DLL dependencies (WINDOWS_EXPORT_ALL_SYMBOLS), so it's drop-in. Submodules fetched with
