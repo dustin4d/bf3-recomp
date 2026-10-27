@@ -113,7 +113,10 @@ bool bf3_dev::Readable(uint8_t* base, uint32_t addr, uint32_t length) {
   if (rex::memory::Memory* memory = rex::system::kernel_memory()) {
     rex::memory::BaseHeap* heap = memory->LookupHeap(addr);
     if (heap && heap == memory->LookupHeap(addr + length - 1)) {
-      return heap->QueryRangeAccess(addr, addr + length - 1) != rex::memory::PageAccess::kNoAccess;
+      if (heap->QueryRangeAccess(addr, addr + length - 1) != rex::memory::PageAccess::kNoAccess) return true;
+      // The module images (0x82000000-0x8A000000): the heap's page table reports parts of them (e.g. BF.Main's
+      // typeinfo section 0x84155000) as no access although the game reads them; ask the host instead.
+      if (addr < 0x82000000u || addr >= 0x8A000000u) return false;
     }
   }
   uint8_t* p = base + addr;
@@ -129,18 +132,32 @@ bool bf3_dev::Readable(uint8_t* base, uint32_t addr, uint32_t length) {
   return true;
 }
 
+namespace {
+// Copies a NUL-terminated guest string of printable characters into out; -1 if it isn't one or the read faults.
+// SEH-guarded: a pointer the check passed can still go stale before the read (2026-10-27: DevFrame read a freed
+// string at guest 0x400B3779 during a Metro session, "Unhandled guest access violation").
+int CopyGuestString(uint8_t* base, uint32_t addr, char* out, size_t max) {
+  __try {
+    for (size_t i = 0; i < max; ++i) {
+      const char c = char(REX_LOAD_U8(addr + uint32_t(i)));
+      if (!c) return int(i);
+      if (c < 0x20 || c > 0x7E) return -1;
+      out[i] = c;
+    }
+    return int(max);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return -1;
+  }
+}
+}  // namespace
+
 std::string bf3_dev::GuestString(uint8_t* base, uint32_t addr, size_t max) {
   if (!addr) return {};
   max = std::min<size_t>(max, 0x1000 - (addr & 0xFFF));
   if (!Readable(base, addr, uint32_t(max))) return {};
-  std::string s;
-  for (size_t i = 0; i < max; ++i) {
-    const char c = char(REX_LOAD_U8(addr + uint32_t(i)));
-    if (!c) break;
-    if (c < 0x20 || c > 0x7E) return {};
-    s += c;
-  }
-  return s;
+  char buf[0x1000];
+  const int n = CopyGuestString(base, addr, buf, max);
+  return n > 0 ? std::string(buf, size_t(n)) : std::string();
 }
 
 void bf3_dev::Queue(std::function<void(PPCContext&, uint8_t*)> fn) {
