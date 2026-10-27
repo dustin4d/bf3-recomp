@@ -1,0 +1,94 @@
+diff --git a/include/rex/system/xam/content_manager.h b/include/rex/system/xam/content_manager.h
+index 949d185..1fd4c8e 100644
+--- a/include/rex/system/xam/content_manager.h
++++ b/include/rex/system/xam/content_manager.h
+@@ -186,6 +186,9 @@ class ContentManager {
+   std::filesystem::path ResolvePackageRoot(uint64_t xuid, XContentType content_type,
+                                            uint32_t title_id = -1);
+   std::filesystem::path ResolvePackagePath(uint64_t xuid, const XCONTENT_AGGREGATE_DATA& data);
++  // Read-only marketplace content shipped next to the game, in the disc's layout:
++  // game_data_root/Content/0000000000000000/title_id/00000002/. Empty without a game data root.
++  std::filesystem::path ResolveGameContentRoot(uint32_t title_id);
+   std::filesystem::path ResolvePackageHeaderPath(const std::string_view file_name, uint64_t xuid,
+                                                  uint32_t title_id,
+                                                  XContentType content_type) const;
+diff --git a/src/system/xam/content_manager.cpp b/src/system/xam/content_manager.cpp
+index d0c7bfd..e12ddbf 100644
+--- a/src/system/xam/content_manager.cpp
++++ b/src/system/xam/content_manager.cpp
+@@ -20,6 +20,7 @@
+ #include <rex/filesystem/devices/host_path_device.h>
+ #include <rex/filesystem/devices/stfs_container_device.h>
+ #include <rex/string.h>
++#include <rex/runtime.h>
+ #include <rex/system/kernel_state.h>
+ #include <rex/system/xam/content_device.h>
+ #include <rex/system/xam/content_manager.h>
+@@ -111,7 +112,31 @@ std::filesystem::path ContentManager::ResolvePackagePath(uint64_t xuid,
+   // Content path:
+   // content_root/xuid/title_id/content_type/data_file_name/
+   auto package_root = ResolvePackageRoot(used_xuid, data.content_type, data.title_id);
+-  return package_root / rex::to_path(data.file_name());
++  auto package_path = package_root / rex::to_path(data.file_name());
++
++  // Not installed in the user data: fall back to marketplace content shipped with the game.
++  if (data.content_type == XContentType::kMarketplaceContent &&
++      !std::filesystem::exists(package_path)) {
++    auto game_root = ResolveGameContentRoot(data.title_id);
++    if (!game_root.empty() &&
++        std::filesystem::is_directory(game_root / rex::to_path(data.file_name()))) {
++      return game_root / rex::to_path(data.file_name());
++    }
++  }
++  return package_path;
++}
++
++std::filesystem::path ContentManager::ResolveGameContentRoot(uint32_t title_id) {
++  auto game_data_root = kernel_state_->emulator()->game_data_root();
++  if (game_data_root.empty()) {
++    return {};
++  }
++  if (title_id == kCurrentlyRunningTitleId) {
++    title_id = kernel_state_->title_id();
++  }
++  auto title_id_str = fmt::format("{:08X}", title_id);
++  auto content_type_str = fmt::format("{:08X}", uint32_t(XContentType::kMarketplaceContent));
++  return game_data_root / "Content" / "0000000000000000" / title_id_str / content_type_str;
+ }
+ 
+ std::filesystem::path ContentManager::ResolvePackageHeaderPath(const std::string_view file_name,
+@@ -170,6 +195,34 @@ std::vector<XCONTENT_AGGREGATE_DATA> ContentManager::ListContent(uint32_t device
+     }
+   }
+ 
++  // Marketplace content shipped with the game (see ResolveGameContentRoot), unless installed too.
++  if (content_type == XContentType::kMarketplaceContent && xuid == 0) {
++    auto game_root = ResolveGameContentRoot(title_id);
++    if (!game_root.empty()) {
++      for (const auto& file_info : rex::filesystem::ListFiles(game_root)) {
++        if (file_info.type != rex::filesystem::FileInfo::Type::kDirectory) {
++          continue;
++        }
++        auto file_name = rex::path_to_utf8(file_info.name);
++        bool installed = false;
++        for (const auto& listed : result) {
++          installed |= listed.file_name() == file_name;
++        }
++        if (installed) {
++          continue;
++        }
++        XCONTENT_AGGREGATE_DATA content_data{};
++        content_data.device_id = device_id;
++        content_data.content_type = content_type;
++        content_data.set_display_name(rex::path_to_utf16(file_info.name));
++        content_data.set_file_name(file_name);
++        content_data.title_id = title_id;
++        content_data.xuid = 0;
++        result.emplace_back(std::move(content_data));
++      }
++    }
++  }
++
+   return result;
+ }
+ 

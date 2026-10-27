@@ -15,6 +15,13 @@ shift $(( $# < 2 ? $# : 2 ))
 "$ROOT/scripts/win_deploy.sh" || exit $?
 
 mkdir -p "$ROOT/logs/win-userdata"
+# HD Content pack as installed marketplace content (hard links into dump/, no copy; src/launcher_hooks.cpp scans it).
+HD_SRC="$ROOT/dump/Disc 1/hd_content"
+HD_PKG="$ROOT/logs/win-userdata/0000000000000000/45410950/00000002/4541095000000000"
+if [[ -f $HD_SRC/Data/Xenon/HD.sb && ! -f $HD_PKG/Data/Xenon/HD.sb ]]; then
+  mkdir -p "$HD_PKG/Data/Xenon"
+  ln -f "$HD_SRC/package.mft" "$HD_PKG/" && ln -f "$HD_SRC/Data/Xenon/HD.sb" "$HD_SRC/Data/Xenon/HD.toc" "$HD_PKG/Data/Xenon/"
+fi
 rm -f "$ROOT/logs/win-run.log"
 if [[ -n "${SHOTS:-}" ]]; then
   rm -rf "$ROOT/logs/shots" && mkdir -p "$ROOT/logs/shots"

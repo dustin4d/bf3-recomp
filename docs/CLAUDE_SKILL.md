@@ -44,7 +44,7 @@ and GhidraMCP.
   committed) with `patches/rexglue/*.patch` applied; `gpu_plugin/CMakeLists.txt` builds only `rexgpu-xenos.dll`
   (D3D12, like the prebuilt Windows SDK) against the prebuilt Windows SDK runtime via `rex::runtime`:
   ```bash
-  cd tools/rexglue-src && git checkout bd833a2a && git apply ../../patches/rexglue/*.patch && cd ../..   # 0001, 0002
+  cd tools/rexglue-src && git checkout bd833a2a && git apply ../../patches/rexglue/*.patch && cd ../..   # 0001-0006
   cmake -S gpu_plugin -B gpu_plugin/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_TOOLCHAIN_FILE=$PWD/tools/cross/win-amd64-xwin.cmake -Drexglue_DIR=$PWD/tools/cross/rexglue
   cmake --build gpu_plugin/build      # ~20 s; win_deploy.sh deploys it instead of the SDK's stock plugin
@@ -54,7 +54,9 @@ and GhidraMCP.
   Patch 0001 = precise memexport readback (cvar `readback_memexport_precise`, default on). Patch 0002 =
   16-bit integer resolves, integer texture fetch, small-resolve readback, GPU frame tracer, slow WAIT_REG_MEM log.
   Patch 0003 = dual-source alpha on fixed16 RTs. Patch 0004 = deferred memexport readback (plugin). Patch 0005 =
-  runtime: `present_vsync` (host DXGI vsync) and SDL audio output stats.
+  runtime: `present_vsync` (host DXGI vsync) and SDL audio output stats. Patch 0006 = runtime: marketplace content not found
+  in the user data is also read from `<game_data_root>/Content/0000000000000000/<title>/00000002/` (listing +
+  mount, read-only), so the HD pack can ship in the build folder.
 - **Runtime built from source** (2026-10-25): `rexruntime.dll` from the same tree replaces the prebuilt one at deploy
   (`scripts/win_deploy.sh`; `REX_STOCK_RUNTIME=1` deploys the SDK's). All 558 symbols the exe/DLLs/plugin import are
   exported, same DLL dependencies (WINDOWS_EXPORT_ALL_SYMBOLS), so it's drop-in. Submodules fetched with
@@ -201,6 +203,8 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
 | BF.Main entry input mapper sub_8324E938 (called from client player input sub_832303C0) | Native PC keys: `src/pc_keys.cpp` (bindings `key_*`, BF3 PC defaults, per context) + `src/bf_main/pc_concepts.cpp` (hook): after the mapper fills the local player's EntryInputState, the concepts the keys hold are merged into every action the entry's own concept map binds them to (analog: stronger wins; digital: OR; bound mask set). Menus: keys press pad buttons (pad_inject.cpp, controller 0 always connected); Esc = Back in menus, Start (game menu) while playing; keys held across a context change are ignored until released. ReXGlue mnk_mode forced off, its F3/F4/F7 overlay hotkeys moved to F10/F12/F11, PC SETTINGS F1 only in menus | User: PC-native controls in every context, BF3 PC keybindings, Esc as universal back. The Xenon data binds concepts to pad inputs only (keyboard concept bindings never fire); per-entry maps (soldier, each vehicle seat) translate concepts to actions, so feeding concepts gives vehicles their own layout from game data |
 | BF.Main level list filter sub_837DEC28 (data source sub_837E9F80 -> sub_837E98D0 -> sub_837E4E38); DevScreen movie via inflate sub_8318B500; LoadLevel sub_836EE268 | Native PRACTICE page: `src/bf_main/practice_menu.cpp` (while DevScreen is on top, category 3 admits only MP_Subway, 1/2 nothing; column titles rewritten in the inflated movie), `main_menu.cpp` (header DEVELOPER MENU -> PRACTICE, MENU SHORTCUTS StaticItems count 0), `level_boot.cpp` (LoadLevel from the page = Metro TDM), `pad_inject.cpp` (left/right masked on DevScreen) | Replaces the ImGui launcher drawn over DevScreen (user, 2026-10-26: native page, one mode, one map) |
 | BF.Main level data source sub_837E9F80 (key 0xB142F75C), row field setter sub_8328F408, flow output node sub_8328E558, UI manager sub_83280730 vtable +0x60 | PRACTICE team step: `src/bf_main/practice_menu.cpp` (choosing the map fills the TEAM column List_05 with US MARINES / RUSSIAN ARMY, refreshes the key, host taps Right; the team is the row last highlighted, since List_05's Release hands LoadLevel a dangling string), `pad_inject.cpp` (the Right tap) | User, 2026-10-26: team choice after the map, before loading |
+| launcher sub_820112A0 (vtable 0x82000638 slot 8 = sub_820107D8 set device) + sub_820126B8 (slot 16, content scan) | `src/launcher_hooks.cpp` (cvar `hd_content`, default on): when Splash is skipped, set state+0x88 = 1 (HDD) and state+0xE0 \|= 0x80; once sub_820126B8 returns true restore both | Splash normally picks the storage device. Without it BF.Main's init (sub_82FE8DC8) calls slot 16 with device -1, sub_820126B8 sees no device and skips the scan (sub_82012148: XContent type 2, mount `DLC%08X:`, reads `package.mft`, `hdcontent` flag at sub_820104F8), so the HD pack never mounts. The device has to be cleared afterwards: the front end (sub_836F9B08) treats a launcher device as `Arrive from launcher?` and runs device selection + TV calibration instead of the main menu. Verified: `DLC00000001:` mounted, engine opens `DLC00000001:\Data\Xenon\HD.sb` (FAILED when hidden), boot to menu unchanged |
+| Debug API trace of launcher functions (dev only) | `bf_main/dev_tools.cpp` HostFunc: launcher addresses 0x82010000+0xC650 looked up in the launcher's own dispatch table at 0x820C0000 | REX_LOOKUP_FUNC uses BF.Main's IMAGE_BASE/CODE_BASE; each module's table is at its own IMAGE_BASE + IMAGE_SIZE |
 
 ## Known notes
 - Module layout: Default.xex is a small launcher; the game is in DLL-type XEX modules (imports xam/xboxkrnl).
@@ -209,7 +213,15 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
   registers [[modules]] (`init --scan-dll` looks for `.dll` files, but these ship as `.xex`). Not yet verified.
 - Disc 1 also has `Content/0000000000000000/45410950/00000002/4541095000000000`: PIRS package
   "Battlefield 3 HD Content" (content type 0x2, 1576255488 bytes), the optional HD texture install. On a console it is
-  installed to the HDD; the runtime will need it under its content dir (00000002 = marketplace content) or skip it.
+  installed to the HDD. Loaded since 2026-10-27 (fix log: launcher sub_820126B8): the runtime serves it from
+  `<user_data_root>/0000000000000000/45410950/00000002/4541095000000000/` (extracted folder: `package.mft`,
+  `Data/Xenon/HD.sb`, `HD.toc`; no `.header` needed). `scripts/win_run.sh` hard-links it from `dump/Disc 1/hd_content`
+  into `logs/win-userdata`. The engine asks the pack first for every superbundle (`DLC00000001:\Data\Xenon\*.toc`
+  misses in the log are normal). It holds higher texture mips only, no meshes; at 1080p the gain is modest (facades
+  sharper, ground about equal), no fps cost. A plain launch (no `--user_data_root`) has the runtime's user data in
+  `C:\Users\Dustin\Documents\bf3` (saves, shader cache; our app's `user\` default only covers soldier_profile.txt), so
+  the pack is installed in the build folder instead: `C:\Games\BF3-recomp\game\Content\0000000000000000\45410950\
+  00000002\4541095000000000\` (copied 2026-10-27, cmp-verified), read through patch 0006.
 - Data is Frostbite 2: `Data/initfs_Xenon`, `Data/layout.toc`, `Data/Xenon/*.sb/.toc` superbundles, `Movies/*.wmv`.
   Disc 1 = COOP_*/MP_* levels + MpChunks.sb; Disc 2 = SP_* levels + SpChunks.sb; both have FrontEnd, UI, Loc, Weapons.
 - The loose `dump/Disc N/default.XEX` + VIDEO_TS/AUDIO_TS/$SystemUpdate are the DVD-video partition, not the game:

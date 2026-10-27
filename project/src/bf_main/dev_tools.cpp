@@ -174,7 +174,17 @@ void ForEachRegion(uint8_t* base, uint32_t lo, uint32_t hi, Fn fn) {
 
 // ---- functions and classes -----------------------------------------------------------------------------------------
 
-PPCFunc* HostFunc(uint8_t* base, uint32_t addr) { return InCode(addr) ? REX_LOOKUP_FUNC(base, addr) : nullptr; }
+// The launcher (Default.xex: image 82000000+C0000, code 82010000+C650) has its own dispatch table after its image,
+// so its functions can be traced too.
+constexpr uint32_t kLauncherCode = 0x82010000u, kLauncherCodeSize = 0xC650u, kLauncherTable = 0x820C0000u;
+
+PPCFunc* HostFunc(uint8_t* base, uint32_t addr) {
+  if (InCode(addr)) return REX_LOOKUP_FUNC(base, addr);
+  if (addr - kLauncherCode < kLauncherCodeSize) {
+    return *reinterpret_cast<PPCFunc**>(base + kLauncherTable + uint64_t(addr - kLauncherCode) * 2);
+  }
+  return nullptr;
+}
 
 // The registered function that contains a code address (the dispatch table has an entry at each function start).
 uint32_t FunctionStart(uint8_t* base, uint32_t addr) {
