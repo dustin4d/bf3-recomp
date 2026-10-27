@@ -182,6 +182,25 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
   exceed max_file_size_bytes: warning only.
 - `docs/reference/trialshd_CLAUDE_SKILL.md` has the forms that worked for Trials HD on the same SDK version.
 
+## Decompilation tooling (2026-10-27; details and results in docs/DECOMP.md)
+```bash
+python3 -I scripts/decomp/coverage_session.py <run> [--teams ru,us] [--kits 0,1,2,3]  # full Metro session, hit set
+                                                    # per phase -> logs/coverage/<run>/ (+ typeinfo.bin), ~15 min
+python3 -I scripts/decomp/xrefs.py [bf_main|default|engine_buildinfo]  # calls/tail calls/lis-built constants per
+                                                    # function from the generated code -> logs/decomp/xrefs_*.json, 8 s
+python3 -I scripts/decomp/reflection.py json logs/decomp/reflection.json   # Frostbite type records
+python3 -I scripts/decomp/inventory.py logs/coverage/run4 logs/coverage/run1 ... --typeinfo logs/coverage/run4/typeinfo.bin
+                                                    # -> docs/decomp/v01_functions.tsv + v01_summary.json
+python3 -I scripts/decomp/tables.py logs/coverage/run4   # markdown tables for docs/DECOMP.md
+python3 -I scripts/decomp/gen_types.py logs/coverage/run4/typeinfo.bin   # -> project/src/native/fb/reflected_types.h
+python3 -I scripts/decomp/lift.py <addr> [--group dir] [--name Class::method]  # override skeleton in src/native/
+python3 -I scripts/decomp/progress.py                # % of the hit set lifted/typed/idiomatic/verified
+```
+- Compile-check a header or lifted file without a full build: `clang++ -std=c++23 -fsyntax-only -march=x86-64-v2
+  -DSPDLOG_FMT_EXTERNAL -DREX_COVERAGE -I project/generated/bf_main -I tools/rexglue-sdk/include -I project/src <file>`.
+- Inventory groups and signals: see the inventory.py docstring; library blocks are in LIBRARY_ANCHORS (Havok
+  2010.2.0-r1, Scaleform GFx 3.3.90, Lua 5.1 + tolua, EA Blaze/DirtySDK/EASTL, rw::audio, ANT, CRT/XDK, zlib).
+
 ## Rules
 - Never distribute or request game assets.
 - Prefer minimal, reversible changes (manifest entries, stubs) over rewrites. Never hand-edit `generated/`.

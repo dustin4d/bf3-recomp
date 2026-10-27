@@ -1,0 +1,84 @@
+{
+ "runs": [
+  "run1",
+  "run2",
+  "run3",
+  "run4",
+  "run4a"
+ ],
+ "functions_total": 93787,
+ "bytes_total": 16860148,
+ "hit_functions": 41271,
+ "hit_bytes": 8147464,
+ "by_group": {
+  "frostbite-core": {
+   "functions": 16634,
+   "bytes": 2377276,
+   "high_confidence": 2943
+  },
+  "render": {
+   "functions": 3128,
+   "bytes": 1180244,
+   "high_confidence": 749
+  },
+  "ui-scaleform": {
+   "functions": 4067,
+   "bytes": 1022404,
+   "high_confidence": 3256
+  },
+  "game": {
+   "functions": 4662,
+   "bytes": 794600,
+   "high_confidence": 1822
+  },
+  "animation": {
+   "functions": 3565,
+   "bytes": 772540,
+   "high_confidence": 196
+  },
+  "havok": {
+   "functions": 2534,
+   "bytes": 665544,
+   "high_confidence": 2230
+  },
+  "audio": {
+   "functions": 1397,
+   "bytes": 333032,
+   "high_confidence": 697
+  },
+  "crt-libs": {
+   "functions": 1284,
+   "bytes": 324740,
+   "high_confidence": 1027
+  },
+  "physics": {
+   "functions": 1283,
+   "bytes": 249652,
+   "high_confidence": 446
+  },
+  "online": {
+   "functions": 1342,
+   "bytes": 214828,
+   "high_confidence": 786
+  },
+  "network": {
+   "functions": 1020,
+   "bytes": 158524,
+   "high_confidence": 218
+  },
+  "launcher": {
+   "functions": 139,
+   "bytes": 29276,
+   "high_confidence": 139
+  },
+  "ai": {
+   "functions": 216,
+   "bytes": 24804,
+   "high_confidence": 0
+  }
+ },
+ "only_one_run": 618,
+ "vtables": 9399,
+ "named_vtables": 3116,
+ "type_names": 3869
+}

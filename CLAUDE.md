@@ -34,6 +34,9 @@ Test runs: Claude may launch, kill and screenshot bf3.exe from C:\Games\BF3-reco
   player/world state, inject input, screenshot. Tests go through it. Development builds also have an in-game debug
   menu (Insert: god mode, flight, teleport, weapons; F9 fps/network overlay; `project/src/dev/dev_menu.cpp`). None of
   it may ship: production builds use the `win-cross-ship` preset (BF3_DEV_TOOLS=OFF).
+- Decompilation: `docs/DECOMP.md` (v0.1 workload, address map, reflection, harness and layout proposals, plan),
+  `docs/decomp/v01_functions.tsv` (the Metro TDM hit set, classified), `scripts/decomp/` (coverage sessions, xrefs,
+  inventory, reflection, typed header generator, lift, progress), `project/src/native/` (decompiled overrides).
 - `docs/reference/trialshd_CLAUDE_SKILL.md` notes from the Trials HD port (same toolchain); reference only,
   its addresses do not apply here.
 - `ENVIRONMENT.md` setup steps and first-run checklist.

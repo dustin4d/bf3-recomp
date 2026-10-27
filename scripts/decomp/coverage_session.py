@@ -40,6 +40,11 @@ class Session:
         self.phases.append({"phase": phase, "file": os.path.basename(path), "t": round(time.time() - self.t0, 1),
                             "hits": counts, "note": note})
         self.log(f"{phase}: {counts}" + (f"  ({note})" if note else ""))
+        # A playing phase runs thousands of functions; a few hundred means the game stalled (2026-10-27 run2: the
+        # GPU stopped completing fences, main thread in the GPU wait sub_82FCC8D8). Stop instead of recording that.
+        if phase.split("-")[0] in ("move", "weapons", "gadgets") and counts.get("BF.Main", 0) < 1000:
+            self.save()
+            raise Bf3Error(f"game stalled ({phase}: {counts.get('BF.Main', 0)} functions)")
 
     def step(self, what, fn):
         """Runs one scripted action; a failure is noted, not fatal (the next phases still record)."""
