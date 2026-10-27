@@ -16,6 +16,7 @@
 #include "pc_keys.h"
 #if BF3_DEV_TOOLS
 #include "dev/debug_api.h"
+#include "dev/dev_menu.h"
 #endif
 
 namespace bf3 {
@@ -80,6 +81,9 @@ class Bf3App : public rex::ReXApp {
     bf3::pc_settings::Init(drawer, &app_context(), config_path_);
     bf3::ApplyPcBindDefaults();
     bf3::local_profile::CreateDialogs(drawer);
+#if BF3_DEV_TOOLS
+    bf3::dev::InstallMenu(drawer, &app_context(), user_data_root_);
+#endif
   }
   // std::unique_ptr<rex::ui::ImGuiDialog> CreateAchievementsOverlay() override;
   // std::unique_ptr<rex::ui::AchievementNotificationDialog>

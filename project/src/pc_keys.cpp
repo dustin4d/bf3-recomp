@@ -27,6 +27,7 @@
 #include <bitset>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <map>
 #include <mutex>
 #include <shared_mutex>
@@ -436,6 +437,32 @@ void Install() {
 
 }  // namespace bf3::pc_keys
 
+#if BF3_DEV_TOOLS
+// Debug menu flight (development builds, bf_main/dev_cheats.cpp): while flying, the jump and crouch keys move up and
+// down instead of reaching the soldier.
+std::atomic<bool> g_dev_flying{false};
+
+bool FlyKey(const char* flag) {
+  return !std::strcmp(flag, "key_jump") || !std::strcmp(flag, "key_crouch") || !std::strcmp(flag, "key_crouch_toggle") ||
+         !std::strcmp(flag, "key_prone");
+}
+
+// out = {forward (+) / back, right (+) / left, up (+) / down, fast (sprint)}; false when the keyboard isn't playing.
+extern "C" __declspec(dllexport) bool bf3_pc_fly_input(float* out, bool flying) {
+  using namespace bf3::pc_keys;
+  g_dev_flying = flying;
+  std::fill(out, out + 4, 0.0f);
+  const Keys k = Poll();
+  if (k.context != Context::kPlay) return false;
+  auto down = [&](const char* flag) { return AnyDown(k, flag) ? 1.0f : 0.0f; };
+  out[0] = down("key_move_forward") - down("key_move_backward");
+  out[1] = down("key_move_right") - down("key_move_left");
+  out[2] = down("key_jump") - std::max({down("key_crouch"), down("key_crouch_toggle"), down("key_prone")});
+  out[3] = down("key_sprint");
+  return true;
+}
+#endif
+
 // Called by bf_main/pc_concepts.cpp after each entry input mapping: out[concept] = value from the keys and (in
 // vehicles) the mouse. Returns false when the keyboard isn't playing (menus, unfocused, host screen open).
 // `on_foot`: the entry is the soldier (the mouse aims through bf_main/mouse_aim.cpp then, not through concepts).
@@ -457,6 +484,9 @@ extern "C" __declspec(dllexport) bool bf3_pc_concepts(float* out, int count, boo
       for (const Action& a : Actions()) {
         if (a.concepts.empty() || a.section == Section::kMenus) continue;
         if (a.section == (on_foot ? Section::kVehicle : Section::kInfantry)) continue;
+#if BF3_DEV_TOOLS
+        if (g_dev_flying && FlyKey(a.flag)) continue;
+#endif
         if (!AnyDown(k, a.flag)) continue;
         for (const ConceptValue& c : a.concepts) {
           if (c.id < kConceptCount) cached[c.id] = std::clamp(cached[c.id] + c.value, -1.0f, 1.0f);

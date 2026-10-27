@@ -26,6 +26,7 @@
 #include <spdlog/sinks/base_sink.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -43,6 +44,7 @@
 
 #include "dev_shared.h"
 #include "dev_breakpoints.h"
+#include "dev_menu.h"
 #include "../crash_trace.h"
 #include "../pad_inject.h"
 #include "../pc_keys.h"
@@ -325,6 +327,24 @@ Reply Status() {
   r.obj.Child("camera", Obj().Vec("pos", s.camera + 12, 3).Number("yaw", cyaw).Number("pitch", cpitch).Int(
                             "calls_per_frame", s.camera_calls));
   r.obj.Child("time", Obj().Bool("paused", s.paused).Number("timescale", s.timescale));
+  std::vector<std::string> overrides;
+  for (const auto& o : s.weapon_override) overrides.push_back(o);
+  r.obj.Child("cheats", Obj().Bool("god", s.god)
+                            .Bool("infinite_ammo", s.infinite_ammo)
+                            .Bool("flying", s.flying)
+                            .Number("fly_speed", s.fly_speed)
+                            .Strings("weapon_overrides", overrides)
+                            .Bool("respawning", s.respawning));
+  auto side = [](const Snapshot::NetSide& n) {
+    return Obj().Number("tx_pps", n.tx_packets).Number("rx_pps", n.rx_packets).Number("tx_kbps", n.tx_kbytes)
+        .Number("rx_kbps", n.rx_kbytes).Number("latency_ms", n.latency_ms).Number("latency_max_ms", n.latency_max_ms);
+  };
+  r.obj.Child("net", Obj().Child("client", side(s.net_client))
+                         .Child("server", side(s.net_server))
+                         .Number("msg_up_ps", s.msg_up)
+                         .Number("msg_down_ps", s.msg_down)
+                         .Number("server_tick_hz", s.server_ticks)
+                         .Number("client_tick_hz", s.client_ticks));
   r.obj.Child("perf", Perf(1.0));
   return r;
 }
@@ -523,6 +543,47 @@ void RegisterCommands() {
     const auto& [usage, help] = kHelp.at(game);
     Register(game, usage, help, [](const Args& a) { return GameRequest(Rest(a, 0)); });
   }
+
+  // Debug menu cheats (bf_main/dev_cheats.cpp), the same commands the in-game menu (dev/dev_menu.cpp) sends.
+  static const std::vector<std::array<const char*, 3>> kCheats = {
+      {"god", "god [on|off|toggle]", "god mode: the local soldier takes no damage"},
+      {"ammo", "ammo [on|off|toggle]", "infinite ammo: shots don't use up the magazine"},
+      {"fly", "fly [on|off|toggle] [m/s]", "noclip flight along the camera (move keys, jump up, crouch down, "
+                                           "sprint x4); no fall damage for 8 s after it ends"},
+      {"flyspeed", "flyspeed <m/s>", "flight speed (default 10)"},
+      {"heal", "heal", "full health (server side)"},
+      {"kill", "kill", "kill the local soldier"},
+      {"respawn", "respawn [kit 0-3]", "kill if alive, then deploy again from the spawn screen (default: last kit)"},
+      {"weapon", "weapon <primary|sidearm|gadget1|gadget2> <name|none>",
+       "loadout override for the next deploy (name: M416, U_M4, Weapons/M416/U_M416; none = the kit's)"},
+  };
+  for (const auto& [name, usage, help] : kCheats) {
+    Register(name, usage, help, [](const Args& a) { return GameRequest(Rest(a, 0)); });
+  }
+  Register("menu", "menu [on|off|toggle] [player|movement|teleport|weapons|overlay]",
+           "open or close the in-game debug menu (Insert) on a tab", [](const Args& a) {
+             const std::string v = a.size() > 1 ? a[1] : "toggle";
+             const bool open = v == "on" ? true : v == "off" ? false : !MenuOpen();
+             SetMenuOpen(open, a.size() > 2 ? a[2].c_str() : "");
+             Reply r;
+             r.obj.Bool("open", open);
+             return r;
+           });
+  Register("weapons", "weapons", "weapon unlocks loaded in the level, by kind (p primary, s sidearm, g gadget, x other)",
+           [](const Args&) {
+             static auto fn = DllExport<int (*)(char*, int)>("bf3_dev_weapons");
+             if (!fn) fn = DllExport<int (*)(char*, int)>("bf3_dev_weapons");
+             if (!fn) return Fail("BF.Main is not loaded yet");
+             std::string list(32768, '\0');
+             list.resize(size_t(std::max(0, fn(list.data(), int(list.size())))));
+             std::map<std::string, std::vector<std::string>> kinds;
+             for (const std::string& e : SplitList(list)) {
+               if (e.size() > 2 && e[1] == ':') kinds[std::string(1, e[0])].push_back(e.substr(2));
+             }
+             Reply r;
+             for (const auto& [kind, names] : kinds) r.obj.Strings(kind, names);
+             return r;
+           });
 
   Register("key", "key <Key>[+<Key>...] [ms=120|down|up]",
            "hold keyboard/mouse-button keys by their key_* names (W, Space, LShift, LMB, RMB...), no focus needed",

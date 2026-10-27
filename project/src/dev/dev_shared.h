@@ -7,7 +7,7 @@
 
 namespace bf3::dev {
 
-constexpr uint32_t kSnapshotVersion = 6;
+constexpr uint32_t kSnapshotVersion = 7;
 
 // Game state as of the last main loop frame (filled on the main thread at the frame boundary).
 struct Snapshot {
@@ -64,6 +64,24 @@ struct Snapshot {
   // Time controls (bf_main/dev_tools.cpp).
   uint8_t paused;            // the main loop is held at the frame boundary
   float timescale;           // guest clock speed (1 = normal)
+
+  // Cheats (bf_main/dev_cheats.cpp).
+  uint8_t god;               // the local server soldier takes no damage
+  uint8_t infinite_ammo;     // shots don't use up the magazine
+  uint8_t flying;            // noclip flight
+  float fly_speed;           // m/s (x4 with sprint held)
+  char weapon_override[4][48];  // unlock names for the next deploy: primary, secondary, gadget 1, gadget 2 ("" = kit's)
+  uint8_t respawning;        // a respawn (kill + deploy) is in progress
+
+  // Network: the local server <-> client link (an in-memory socket, see dev_cheats.cpp), over the last full second.
+  struct NetSide {
+    float tx_packets, rx_packets;  // per second
+    float tx_kbytes, rx_kbytes;    // KB per second
+    float latency_ms, latency_max_ms;  // send -> receive by the other side (queue time), average and worst
+  } net_client, net_server;
+  float msg_up, msg_down;    // game messages per second: client -> server, server -> client (the dispatcher)
+  float server_ticks;        // server soldier physics steps per second (the server simulation rate)
+  float client_ticks;        // local aiming ticks per second (the client simulation rate)
 };
 
 // One frame of history for the crash recorder (bf3_dev_history): the last few seconds before a fault.
@@ -90,3 +108,5 @@ struct HistoryRecord {
 //   int  bf3_dev_query(const char* line, char* out, int capacity)        tool commands; writes JSON members (no braces),
 //                                                                          returns the length, < 0 on error (out = text)
 //   int  bf3_dev_history(HistoryRecord* out, int capacity)               recent frames, oldest first
+//   int  bf3_dev_weapons(char* out, int capacity)                         weapon unlocks loaded in the level, by kind:
+//                                                                          "<kind>:<unlock name>;..." (dev_cheats.cpp)

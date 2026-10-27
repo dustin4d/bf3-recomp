@@ -387,6 +387,9 @@ uint64_t bf3_level_entered_ingame_ms() { return g_entered_ingame_ms.load(); }
 
 extern "C" REX_FUNC(sub_833AF040) {
   g_level_manager.store(ctx.r3.u32, std::memory_order_relaxed);
+#if BF3_DEV_TOOLS
+  bf3_dev::ServerTick(ctx, base);  // debug menu server-side actions (dev_cheats.cpp)
+#endif
   FadeWatchdogTick(ctx, base);
   PracticeTick(ctx, base);
   static bool boot_requested = false;

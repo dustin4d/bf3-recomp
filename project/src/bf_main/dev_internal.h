@@ -37,4 +37,12 @@ float Timescale();
 void RecordHistory(const bf3::dev::Snapshot& s, float frame_ms);
 void OnMessage(uint8_t* base, uint32_t msg, uint32_t lr);  // the message dispatcher (level_boot.cpp)
 
+// dev_cheats.cpp (debug menu: god mode, infinite ammo, flight, loadout overrides, respawn, network stats)
+void CheatOnMessage(uint8_t* base, uint32_t msg, uint32_t lr);  // every dispatched message (from OnMessage)
+void ServerTick(PPCContext& ctx, uint8_t* base);  // server thread, each level manager update (level_boot.cpp)
+void FillCheats(uint8_t* base, bf3::dev::Snapshot& s);  // main thread, while building the frame's snapshot
+void CheatFrame(PPCContext& ctx, uint8_t* base, const bf3::dev::Snapshot& s, float frame_ms);  // after it
+void FlyTeleport(const float pos[3]);  // a teleport while flying moves the flight position too
+bool CheatCommand(uint8_t* base, const std::vector<std::string>& args, bool& ok, std::string& reply);
+
 }  // namespace bf3_dev

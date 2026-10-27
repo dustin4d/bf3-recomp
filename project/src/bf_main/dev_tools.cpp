@@ -791,7 +791,9 @@ void RecordHistory(const bf3::dev::Snapshot& s, float frame_ms) {
 }
 
 void OnMessage(uint8_t* base, uint32_t msg, uint32_t lr) {
-  if (!g_msg_on.load(std::memory_order_relaxed) || !Readable(base, msg, 12)) return;
+  if (!Readable(base, msg, 12)) return;
+  CheatOnMessage(base, msg, lr);
+  if (!g_msg_on.load(std::memory_order_relaxed)) return;
   const uint32_t category = REX_LOAD_U32(msg + 4), type = REX_LOAD_U32(msg + 8);
   std::lock_guard lock(g_msg_mutex);
   if (!g_msg_filter.empty() &&

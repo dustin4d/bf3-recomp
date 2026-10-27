@@ -22,6 +22,9 @@
 
 #include <windows.h>
 
+#include <rex/system/kernel_state.h>
+#include <rex/system/xmemory.h>
+
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -102,8 +105,17 @@ double Seconds(Clock::duration d) { return std::chrono::duration<double>(d).coun
 
 float bf3_dev::LoadF(uint8_t* base, uint32_t a) { return std::bit_cast<float>(REX_LOAD_U32(a)); }
 
+// The guest heaps' page tables (ReXGlue's xmemory) say what is committed and readable. VirtualQuery gives the same
+// answer but walks the host pages of the whole region to size it: ~150 us a call on the big guest heaps, which made the
+// snapshot cost ~9 ms a frame. It remains the fallback for a range that spans heaps.
 bool bf3_dev::Readable(uint8_t* base, uint32_t addr, uint32_t length) {
   if (!base || !length || uint64_t(addr) + length > 0x100000000ull) return false;
+  if (rex::memory::Memory* memory = rex::system::kernel_memory()) {
+    rex::memory::BaseHeap* heap = memory->LookupHeap(addr);
+    if (heap && heap == memory->LookupHeap(addr + length - 1)) {
+      return heap->QueryRangeAccess(addr, addr + length - 1) != rex::memory::PageAccess::kNoAccess;
+    }
+  }
   uint8_t* p = base + addr;
   uint8_t* end = p + length;
   while (p < end) {
@@ -336,6 +348,7 @@ void bf3_main::DevFrame(PPCContext& ctx, uint8_t* base) {
   }
   s.paused = Paused();
   s.timescale = Timescale();
+  FillCheats(base, s);
 
   float frame_ms = 0.0f;
   {
@@ -356,8 +369,11 @@ void bf3_main::DevFrame(PPCContext& ctx, uint8_t* base) {
     }
   }
   RecordHistory(s, frame_ms);
+  CheatFrame(ctx, base, s, frame_ms);
+  const Clock::time_point hold = Clock::now();
   FrameControl(ctx, base);  // may hold here while paused (running queued work)
-  last = Clock::now();      // a pause isn't a frame time
+  // Frame time = start to start (this work included), minus a pause hold.
+  last = now + (Clock::now() - hold);
 }
 
 extern "C" REX_FUNC(sub_8325A1D0) {
@@ -578,6 +594,7 @@ extern "C" __declspec(dllexport) bool bf3_dev_request(const char* line, char* re
       heading = std::atan2(g_xf[8], g_xf[10]);
     }
     const std::array<float, 3> pos{p[0], p[1], p[2]};
+    FlyTeleport(pos.data());
     Queue([soldier, pos, heading](PPCContext& ctx, uint8_t* base) {
       const bool ok = TeleportServer(ctx, base, soldier, pos.data(), heading);
       REXLOG_INFO("debug api: teleport server soldier {:08X} to ({:.2f}, {:.2f}, {:.2f}) heading {:.3f}: {}", soldier,
@@ -603,5 +620,8 @@ extern "C" __declspec(dllexport) bool bf3_dev_request(const char* line, char* re
     for (uint32_t e : *found) list += fmt::format(" 0x{:08X}/vt{:08X}", e, REX_LOAD_U32(e));
     return answer(true, list);
   }
+  bool ok = false;
+  std::string text;
+  if (CheatCommand(base, args, ok, text)) return answer(ok, text);
   return answer(false, "unknown game command '" + cmd + "'");
 }
