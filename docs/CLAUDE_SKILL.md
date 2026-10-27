@@ -192,6 +192,7 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
 | Mouse look (BF.Main sub_83264488, sub_832EC788) | Native PC mouse, not ReXGlue's stick emulation: `src/pc_mouse.cpp` takes Raw Input (WM_INPUT) on the game window, hides/clips the cursor while playing, exports `bf3_mouse_look_delta` (radians: `mouse_sensitivity` x 0.0008 rad/count, x `mouse_ads_sensitivity` while the LT-bound mouse button is held, `mouse_invert_y`); `src/bf_main/mouse_aim.cpp` adds it to the local player's aimer yaw/pitch (+0xC/+0x10) before sub_83264488 integrates input. `mnk_mouse` is forced off | The emulated right stick (dead zone, response curve, turn acceleration, 200x counts clamped to full tilt) made mouse aim muddy. Verified with SendInput moves: 800 counts -> 0.64 rad yaw, right = turn right, up = look up |
 | Viewmodel/view jitter while turning (BF.Main sub_83267DF0, sub_8325C658, frame wait sub_83838CF0) | `bf_main/mouse_aim.cpp` render aim: the mouse is sampled once per frame after the frame wait (`bf3_main::SampleMouseLook`, called from frame_rate.cpp); ticks consume that sample in sub_83264488. After each local aiming update (sub_83267DF0) and before each camera update (sub_8325C658, tick and per-frame paths) the aiming state's yaw/pitch (+0xC/+0x10) are set to the tick's values + the sampled turn no tick has applied yet (pitch through the game's clamp sub_83258A60(aimer, pitch, state+0x30), tick sway kept). The next aiming update rebuilds the state from the aimer, so the simulation never sees the shown values; a state the game changed meanwhile is left alone | Aim/sway run on the fixed 30 Hz tick; uncapped frames rebuilt the camera from the same tick values (engine interpolation fraction always 0), so view and weapon stepped every 2-3 frames. Sampling the mouse "now" at the camera update left ~20% uneven steps (the sample point moves with tick work). Verified with BF3_MOUSE_FEED at ~120 fps: camera yaw advances every frame at the fed rate (0.40 rad/s ±10%, no tick-frame pattern); pitch runs smoothly into the 1.4836 rad clamp and holds without snap-back |
 | First-person arms/weapon snapping while turning (BF.Main sub_8325C658, frame wait sub_83838CF0) | `bf_main/mouse_aim.cpp` `SampleMouseLook(ctx, base)` at the frame boundary: after sampling the mouse it writes the frame's render aim into the aiming state and runs the local soldier's camera update `__imp__sub_8325C658(soldier)` (soldier = r30 of sub_8325D1C0 at the sub_832EC788 call; only while a tick saw it in the last 200 ms), so the soldier transform (sub_8325A1D0) follows the aim before the frame's animation jobs read it | The animation feeder sub_8325F560 (called per frame from the anim job sub_8385E6E8 -> sub_83840C18) takes the arms' root from the soldier transform (+0x40 of its output, blend weight +0xC4 = 0). On frames without a tick that transform was set by the late per-frame camera update, after the anim jobs: the arms root (and the weapon) lagged one frame's turn behind the view on those frames and caught up on tick frames (measured ~10 mrad, 10-20 px). Measured by scanning guest memory for bone matrices near the camera and tracking them per frame against the render camera (sub_832C8108 output): weapon/hand bones now 0.5-0.6 mrad per frame relative motion, same on tick and non-tick frames, through speed changes, stops and reversals. A yaw-only per-tick copy (likely the third-person body: shadow only) still steps |
+| Local body flicker (3P spine, bones 6/7) and first-person arms jank at uncapped fps (BF.Main sub_8306BFF0, manager +0xC1; caller sub_831FC8A8; update sub_83070B98) | `bf_main/anim_fixed_tick.cpp` hooks sub_8306BFF0(manager, on) and passes on = 0 (cvar `anim_fixed_tick`, default on, applies when the client creates its animation manager): "variable tick length" stays off, so the animation advances on simulation ticks and the per-frame pass sub_831E3610 blends the last two tick poses by the frame's fraction (info +0x1C; AntSettings InterpolatePoses +0x3B, manager +0xC3 = 1) | The client setup sets manager +0xC1 = 1 (AntSettings AllowVariableTickLength +0x3C allows it; timer settings *(timer+0x60) +0x60/+0x62 decide), which disables pose interpolation in sub_83070B98 and advances every update by the frame's dt. A looping pose clip one 60 Hz frame long (the console only ever sampled it at whole 1/30 s steps) was sampled at arbitrary phases: spine sawtooth 2-24 deg per frame, and a first-person arm bone moving 35-100 mm per frame in camera space while turning. After (`bf3dbg.py bones`, `anim_rec`): spine steady at 25.1 deg standing (= 30 fps cap from boot), 0.1-1.9 deg/frame even motion walking, ~0.25 deg/frame turning; arm bones 0.6 mm median, p90 ~2 mm per frame in camera space during a 2.5 rad/s turn. Frame rate up (~250-300 fps vs 190-260: animation runs per tick) |
 | Boot straight to the main menu (BF.Main sub_832917E0, sub_83294100, sub_83749090, sub_83E6EE58, sub_832268B8) | `src/bf_main/boot_flow.cpp` (cvar `skip_title`, default on): flow data 0x880850C5 (HasPressedStart) answered true so the root front-end graph skips StartScreen; at the SetHasPressedStart transition the UI manager's SetActiveController action sub_83749090 runs (active controller + active user -> profile load, as after START); "Has calibrated?" (0x47A90E9B) answered true for that read; the boot load's CHECKING DATA post from the RealMemCard job sub_83DF1898 is not made (empty handle, shown_ms -1: no popup, no 3000 ms minimum sleep); the first profile save (sub_832268B8, sent too early on this path) is held with heap copies of its strings and made when the load's MemoryCardPopupHide (0x4DF6DB30/0xEC2DDCE4) arrives | Launch -> main menu was 13 s of loading, a PRESS START screen (input after a ~5 s timer, idle-movie re-push every 40 s), then CHECKING DATA held 3 s. Now main menu 13.3 s after launch, no input. A save sent before the load stays pending at options manager +0x914 and blocks later saves; held and replayed it completes (status 0) and a normal boot loads that save (calibration flag read back true). PROF_SAVE untouched otherwise. Holding the graph mid-transition instead (replaying sub_832917E0 later) left the flow dead |
 | bf_main/ui_screens.cpp ScreenList | reads moved into an SEH-guarded helper | The live screen vector is rebuilt on the UI thread during the level switch; other threads followed a stale screen pointer (guest 0x7965725F, ASCII) |
 | BF.Main FadeManager (0x840BAE54) fade in sub_83247D38 | `src/bf_main/fade_fix.cpp`: if a FadeEntity's StartFaded (sub_83247E10, name 0x82DCF6C0) isn't followed by a fade in within 5 s, fade in (1 s) from the level manager update (level_boot.cpp sub_833AF040) | In MP levels started from PRACTICE the level's FadeEntity never gets its FadeIn event: the color grading LUT job (sub_83C8EB28, matrix from sub_83D1B078) used an all-zero matrix and the UI was faded too, so the screen stayed black |
@@ -271,6 +272,46 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
         `[crash_report]` block (native stack, the last 64 API commands with ok/FAIL/... still running, breakpoints,
         frames: every frame for the last 30 then every 25th of the last 3000). `bf3dbg.py crash` prints the last one.
     - `scripts/addr_refs.py <hex>` finds code building an address with lis+addi/lwz (Ghidra misses those).
+    - Bone matrices (skinning) as the GPU received them, per frame: `bf3dbg.py bones [frames] [--count n | --dwords n]
+      [--bones 0,1,2] [--pass i] [--jump deg] [--csv out.csv]` (2026-10-27). See "Inspecting bone matrices" below.
+
+### Inspecting bone matrices (skinned meshes)
+What the GPU actually skins with is the ground truth for body/arm flicker; the CPU-side pose buffers are several steps
+earlier and some (e.g. the world-space palette written by the pose job sub_830629A0) are never read by rendering.
+- Path, CPU to GPU (BF.Main): pose job sub_8354F840 -> sub_83063740 -> sub_830629A0 (pose of an `Animatable`);
+  render job sub_83CEDBD8 -> sub_8320DC98 -> sub_8325A048 -> sub_8306DCC0 (pose -> camera-relative palette of the
+  whole skeleton, in frame scratch memory around 0x4098xxxx-0x409Axxxx); per draw, sub_8316C898(r3 = bones in the
+  draw's subset, r4 = u16 skeleton bone ids, r5 = skeleton size, r6 = whole palette, r7 = subset out); the command
+  buffer job copies the subset with sub_8317C668 into a SET_SHADER_CONSTANTS packet at c0 (VS constants).
+- Packet layout: c0-c4 the draw's header, then 3 registers per bone from c5: rows of a 3x4 matrix, rotation in xyz,
+  translation in w (camera-relative: translations are 1-2 m). Size = 5 + 3n registers rounded up to 4 registers
+  (`bf3dbg.bone_packet_dwords(n)`); registers past the last bone are padding with leftovers from earlier draws.
+- Local 3P soldier (skeleton of 179 bones, sub_8316C898 r5 = 0xB3): 7 subset draws per pass, bones (dwords)
+  53 (656), 42 (528), 38 (480), 29 (368), 20 (272), 17 (224), 1 (32). In the 53-bone draw, slot 0/1 = skeleton
+  bones 6/7 (spine). Map other slots: `bf3dbg.py trace sub_8316C898 60 2`, peek r4 (2n bytes of u16 bone ids).
+  Two passes per frame (`--pass 0|1`, same matrices). Skeletons of 30 and 15 bones through sub_8316C898 (25/26- and
+  11-bone draws, palettes 0x46xxxxxx) are world props (scale 0.8/1.2, metres away), not the first-person arms; the
+  arms are not found by packet size. Find them in memory instead: world-space pose blocks (32 bytes per bone, position
+  at +16) within a metre of the eye, 0x46xxxxxx, that change every frame and stay put in camera space while turning
+  (2026-10-27: a 5-6 bone block, e.g. 0x46199440; 0x4634xxxx with 180 bones is the 3P body). Then record them per
+  frame with the `anim_rec` cvars (src/bf_main/anim_probe.cpp, dev builds): `cvar anim_rec_addr <decimal addr of
+  bone 0's x = block + 48>`, `cvar anim_rec 300`; "anim rec:" lines carry tick, pass (t/f), fraction, shown aim
+  yaw/pitch and 4 bone positions. Steady turn: `BF3_MOUSE_FEED="0,0,30000;1500,0,90000"` (30 s idle, then turning).
+  Other runtime switches there: `anim_log N` (update info), `anim_dt_mode 0-4`, `anim_alpha X`.
+- Usage: `scripts/bf3dbg.py run 900 --metro --spot sunny_street`, then `scripts/bf3dbg.py bones 30` (the 53-bone
+  packet), or `--count 42` etc. for another draw. It prints, per frame, each slot's translation and its rotation
+  since the previous frame, `*` above --jump (2 deg). Standing still a healthy body moves < 0.5 deg/frame
+  (30 fps cap: 0.0-0.1); the 2026-10-27 flicker showed 4-18 deg on slots 0/1 with a reset every 30 Hz tick.
+  `--csv` writes every slot's full rotation too. Logging slows the frame rate a little while it runs.
+- Needs our GPU plugin build (tools/rexglue-src, not yet in patches/: it sits with the parked runtime changes):
+  cvars `gpu_vsconst_trace N` (log the next N frames; one `vsconst frame` line per swap, draw index : VS hash :
+  hash of c0-c255 : index count), `gpu_vsconst_packet_dwords D` (also log the data of SET_SHADER_CONSTANTS packets at
+  c0 with D dwords as `vspacket` lines), `gpu_vsconst_dump_vs_lo X` (log c0-c255 of draws whose VS hash low 32 bits
+  = X as signed int, 1 = every draw: ~10 MB per frame), `gpu_late_write_check N` (command memory the guest changed
+  after the GPU read it: was 0 of ~900 ranges, so the GPU reads final data). `bf3dbg.py bones` sets and clears them.
+- Finding the draw of another skinned mesh: dump every draw for 2 frames (`gpu_vsconst_dump_vs_lo 1`,
+  `gpu_vsconst_trace 2`), look for draws whose c5.. hold orthonormal 3x4 rows that differ between the frames, then
+  match the packet size before them (frame trace with `gpu_frame_trace_at` logs every SET_SHADER_CONSTANTS).
   - Conventions: positions are Frostbite world space (Y up). Soldier transform rows left/up/forward/position, the
     soldier faces +forward (heading = atan2(f.x, f.z)); the render camera looks down -forward. camera yaw = heading
     = -aim_yaw (mod 2pi), camera pitch = aim_pitch. Eye = soldier origin + 1.60 m standing.
@@ -594,6 +635,30 @@ listed as `<target> from <src>: b <target> ... - target not in any function`.
   - Balcony over the park: eye (-229.239, 71.174, -537.213). RU spawn seen: eye (-221.775, 71.168, -537.215) yaw -1.381.
   `scripts/metro_bright.sh` gets there by menus (RUSSIAN ARMY + a 5 s walk), but spawn points vary between runs; a
   teleport/debug menu is planned.
+- Local body flicker (FIXED, see below), 2026-10-27 findings (supersede the per-tick theory below): measured with `bf3dbg.py bones`, the
+  spine (skeleton bones 6/7) of the 3P body is a pure function of the dt in the animation manager update
+  sub_83070B98's info (+0; callers sub_831E3610 per frame, sub_831EC2F8 on tick frames). dt = 1/30 or 1/60 s: steady
+  (the 30 fps pose); dt = 12 ms constant: sawtooth wrapping every ~3.6 frames = stroboscopic aliasing of a looping clip
+  ~1/60 s long advanced by dt. Ruled out: GPU emulation (late-write check 0), job races, InterpolatePoses (AntSettings
+  +0x3B, toggled), the alpha at info +0x1C, our mouse-look hooks. dt quantized to whole 1/60 s steps with carry
+  (dev experiment BF3_ANIM_QUANT in src/bf_main/anim_probe.cpp) removed the sawtooth but left a 2-pose flicker (frames
+  with dt 0). Next: find that clip node and sample it at a fixed phase.
+  - 2026-10-27 later: the spine (slot 0, pure rotation about one axis, angle = atan2(r01, r11)) sweeps ~25 -> ~2 deg
+    over each 30 Hz tick, then restarts: loop = 1 tick. 30 fps cap: steady 25.0 deg (the console look). Uncapped:
+    2-24 deg sawtooth. BF3_ANIM_QUANT=1 + BF3_ANIM_ONCE=1 (advance once per tick in whole 1/60 s steps): steady
+    2.0 deg on every frame, standing and looking down (pitch -1.22), i.e. phase-locked, but on the other end of the
+    sweep. Blending the GPU matrices between frames would only smear 2 <-> 25 deg.
+  - AntSettings (type object 0x84156134, instance cached at 0x840A8768 -> 0x4128AA40 in a run; reflection fields
+    at 0x841991E8): +0x3B InterpolatePoses = 1, +0x3C AllowVariableTickLength = 1, +0x32 UpdateEnable, +0x35
+    DisableAnimManagerSceneOps, +0x40 BlockOnJobs. sub_83070B98 interpolates (flag to sub_830667E8 / sub_83060948)
+    only if +0x3B and manager +0xC4 set and manager +0xC0/+0xC1 clear. Poking +0x3C to 0 at runtime: sawtooth
+    unchanged. `look` does not hold pitch in a run started at pitch 0; use `mouse look 0 3000`.
+  - FIXED 2026-10-27 (fix log: anim_fixed_tick.cpp): manager +0xC1 ("variable tick length") is set once by the client
+    setup through sub_8306BFF0, so poking AntSettings +0x3C later had no effect; with +0xC1 = 0 the engine runs its own
+    fixed-tick animation with InterpolatePoses. Manager = *(*(0x840B65D0) + 0x18); +0xC0..+0xC5 were 00 01 00 00 01 00.
+    Notes: info +0x1C (fraction) does ramp 0 -> 1 over each tick on the client passes (not always 0); a third update
+    caller (lr 0x8339F97C, likely the local server) gets frame dt and fraction 0. Toggling +0xC1 at runtime leaves the
+    clip at whatever phase variable dt reached (steady, but e.g. 9.3 deg instead of 25.1) until the next spawn.
 - Local body flicker (open, 2026-10-26): looking down, the local soldier's third-person body is drawn (also at 30 fps,
   where it holds still relative to the view). Uncapped it jumps: its bone palette (3x4 matrices, translation in the 4th
   column, stride 0x30, near the player; found by scanning guest memory) moves ~2x as far on tick frames as on others
